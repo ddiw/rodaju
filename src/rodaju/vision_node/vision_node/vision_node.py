@@ -191,11 +191,19 @@ class VisionNode(Node):
         # 바운딩박스 시각화
         vis = self._color_frame.copy()
         for raw in raws:
-            x1, y1 = raw["x"], raw["y"]
-            x2, y2 = x1 + raw["w"], y1 + raw["h"]
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(vis, f"{raw['label']} {raw['confidence']:.2f}",
-                        (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            label_text = f"{raw['label']} {raw['confidence']:.2f}"
+            if raw.get("points") is not None:
+                # OBB: 회전된 다각형
+                cv2.polylines(vis, [raw["points"]], isClosed=True, color=(0, 255, 0), thickness=2)
+                x, y = int(raw["points"][0][0]), int(raw["points"][0][1])
+            else:
+                # 일반 bbox
+                x1, y1 = raw["x"], raw["y"]
+                x2, y2 = x1 + raw["w"], y1 + raw["h"]
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                x, y = x1, y1
+            cv2.putText(vis, label_text, (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         cv2.imshow("vision_node", vis)
         cv2.waitKey(1)
 
@@ -234,16 +242,22 @@ class VisionNode(Node):
                 boxes_src = res.obb if (res.obb is not None and len(res.obb)) else res.boxes
                 if boxes_src is None or len(boxes_src) == 0:
                     continue
-                for box, score, cls in zip(
+                import numpy as np
+                is_obb = boxes_src is res.obb
+                for i, (box, score, cls) in enumerate(zip(
                     boxes_src.xyxy.tolist(),
                     boxes_src.conf.tolist(),
                     boxes_src.cls.tolist(),
-                ):
+                )):
                     if score < self._conf:
                         continue
                     x1, y1, x2, y2 = [int(v) for v in box]
                     raw_label = res.names[int(cls)]
                     label     = LABEL_NORM.get(raw_label.lower(), raw_label.lower())
+                    # OBB면 4개 꼭짓점 저장
+                    points = None
+                    if is_obb and hasattr(boxes_src, "xyxyxyxy"):
+                        points = boxes_src.xyxyxyxy[i].cpu().numpy().astype(np.int32)
                     dets.append({
                         "label"     : label,
                         "confidence": float(score),
@@ -251,6 +265,7 @@ class VisionNode(Node):
                         "w": x2 - x1, "h": y2 - y1,
                         "cx": (x1 + x2) // 2,
                         "cy": (y1 + y2) // 2,
+                        "points"    : points,
                     })
             if dets:
                 self.get_logger().info(f"[YOLO] {[(d['label'], round(d['confidence'],2)) for d in dets]}")
