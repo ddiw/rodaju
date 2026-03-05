@@ -86,7 +86,7 @@ BAG_GRIP_Z_OFFSET     = -15.0
 POUR_ROTATION_OFFSET  = [0.0, 0.0, 150.0, 0.0, 0.0, 180.0]
 
 # 훑기 파라미터
-SWEEP_Z        = 25.0     # 테이블 표면 높이 (mm)
+SWEEP_Z        = 85.0     # 테이블 표면 높이 (mm)
 SWEEP_RANGE_X  = 250.0    # 좌우 훑기 범위 (mm)
 SWEEP_RANGE_Y  = 180.0    # 앞뒤 훑기 범위 (mm)
 SWEEP_STEP_Y   = 60.0     # Y 스텝 간격 (mm)
@@ -433,7 +433,7 @@ class M0609ExecNode(Node):
         """
         bin_id    = goal.bin_id
         gp        = GRIPPER_PARAMS.get(bin_id, GRIPPER_PARAMS["DEFAULT"])
-        bin_pos   = BIN_POSITIONS.get(bin_id, BIN_POSITIONS["BIN_TRASH"])
+        bin_pos   = BIN_POSITIONS.get(bin_id, BIN_POSITIONS["BIN_PLASTIC"])
 
         # 목표 좌표
         if goal.has_3d:

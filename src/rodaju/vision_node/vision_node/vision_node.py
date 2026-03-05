@@ -38,9 +38,10 @@ except ImportError:
     INTERFACES_AVAILABLE = False
 
 try:
-    from yolo import YoloModel
+    from vision_node.yolo import YoloModel
     YOLO_AVAILABLE = True
-except Exception:
+except Exception as _yolo_err:
+    print(f"[WARN] YoloModel import failed: {_yolo_err}")
     YOLO_AVAILABLE = False
 
 
@@ -51,18 +52,20 @@ except Exception:
 # YOLO 클래스 → 분류 레이블 정규화
 LABEL_NORM: dict[str, str] = {
     # 500ml 생수 페트병
+    "plastic"       : "pet",
     "plastic_bottle": "pet",
     "bottle"        : "pet",
     "pet_bottle"    : "pet",
     "water_bottle"  : "pet",
     # 캔
-    "tin_can"       : "can",
     "can"           : "can",
+    "tin_can"       : "can",
     "aluminum_can"  : "can",
     "metal"         : "can",
     # 종이컵
+    "paper"         : "paper_cup",
     "paper_cup"     : "paper_cup",
-    "cup"           : "cup",
+    "cup"           : "paper_cup",
     # 봉투 클래스
     "trash_bag"     : "trash_bag",
     "bag"           : "trash_bag",
@@ -84,7 +87,7 @@ class VisionNode(Node):
 
         # ── 파라미터 ────────────────────────────────────────
         self.declare_parameter("publish_rate",    10.0)
-        self.declare_parameter("conf_threshold",   0.45)
+        self.declare_parameter("conf_threshold",   0.25)
         self.declare_parameter("depth_scale",      0.001)  # mm → m
         self.declare_parameter("depth_roi_radius",    3)   # 중심 주변 평균 반경
 
@@ -165,6 +168,7 @@ class VisionNode(Node):
     # ═══════════════════════════════════════════════════════
 
     def _detect_and_publish(self):
+        import cv2
         if self._color_frame is None:
             return
 
@@ -183,6 +187,17 @@ class VisionNode(Node):
             det = self._build_detection(raw)
             if det:
                 dets.append(det)
+
+        # 바운딩박스 시각화
+        vis = self._color_frame.copy()
+        for raw in raws:
+            x1, y1 = raw["x"], raw["y"]
+            x2, y2 = x1 + raw["w"], y1 + raw["h"]
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(vis, f"{raw['label']} {raw['confidence']:.2f}",
+                        (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.imshow("vision_node", vis)
+        cv2.waitKey(1)
 
         # 감지 결과가 없으면 발행하지 않음
         # (빈 메시지가 manager_node 큐에 노이즈로 쌓이는 것 방지)
@@ -215,10 +230,14 @@ class VisionNode(Node):
             results = self._yolo.model([frame], verbose=False)
             dets = []
             for res in results:
+                # OBB 모델 우선, 없으면 일반 boxes
+                boxes_src = res.obb if (res.obb is not None and len(res.obb)) else res.boxes
+                if boxes_src is None or len(boxes_src) == 0:
+                    continue
                 for box, score, cls in zip(
-                    res.boxes.xyxy.tolist(),
-                    res.boxes.conf.tolist(),
-                    res.boxes.cls.tolist(),
+                    boxes_src.xyxy.tolist(),
+                    boxes_src.conf.tolist(),
+                    boxes_src.cls.tolist(),
                 ):
                     if score < self._conf:
                         continue
@@ -233,6 +252,8 @@ class VisionNode(Node):
                         "cx": (x1 + x2) // 2,
                         "cy": (y1 + y2) // 2,
                     })
+            if dets:
+                self.get_logger().info(f"[YOLO] {[(d['label'], round(d['confidence'],2)) for d in dets]}")
             return dets
         except Exception as e:
             self.get_logger().error(f"YOLO error: {e}")

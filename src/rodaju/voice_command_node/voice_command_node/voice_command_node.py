@@ -56,7 +56,7 @@ except ImportError:
     WAKEUP_AVAILABLE = False
 
 try:
-    from voice_processing.MicController import MicController, MicConfig
+    from voice_command_node.MicController import MicController, MicConfig
     MIC_CONTROLLER_AVAILABLE = True
 except ImportError:
     MIC_CONTROLLER_AVAILABLE = False
@@ -66,7 +66,7 @@ except ImportError:
 #  패키지 경로 & API 키 로드  (get_keyword.py 방식 동일)
 # ═══════════════════════════════════════════════════════════════
 
-PACKAGE_NAME = "recycle_voice"   # 실제 패키지명으로 수정
+PACKAGE_NAME = "voice_command_node"   # 실제 패키지명으로 수정
 
 try:
     package_path = get_package_share_directory(PACKAGE_NAME)
