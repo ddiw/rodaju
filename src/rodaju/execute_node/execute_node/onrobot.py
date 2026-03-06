@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 
-from pymodbus.client.sync import ModbusTcpClient as ModbusClient
+try:
+    from pymodbus.client import ModbusTcpClient as ModbusClient   # pymodbus v3
+except ImportError:
+    try:
+        from pymodbus.client.sync import ModbusTcpClient as ModbusClient  # pymodbus v2
+    except ImportError:
+        raise ImportError("pymodbus is not installed. Run: pip install pymodbus")
 
 
 class RG:
 
     def __init__(self, gripper, ip, port):
-        self.client = ModbusClient(
-            ip, port=port, stopbits=1, bytesize=8, parity="E", baudrate=115200, timeout=1
-        )
+        self.client = ModbusClient(ip, port=port, timeout=1)
         if gripper not in ["rg2", "rg6"]:
             print("Please specify either rg2 or rg6.")
             return

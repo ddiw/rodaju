@@ -10,6 +10,8 @@ float32 pick_x_m
 float32 pick_y_m
 float32 pick_z_m
 
+float32 pick_angle_deg   # OBB 회전 각도 (deg). 0이면 고정 자세 사용
+
 string bin_id
 
 ---

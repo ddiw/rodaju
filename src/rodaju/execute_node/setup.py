@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-        'execute = execute_node.robot_move:main',
+        'execute = execute_node.m0609_exec_node:main',
         ],
     },
 )

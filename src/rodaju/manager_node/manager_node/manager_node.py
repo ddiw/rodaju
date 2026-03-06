@@ -5,7 +5,7 @@ manager_node.py  ─  중앙제어 노드
 
 [시나리오 흐름]
   PHASE 1. STANDBY        ─ 초기 대기
-  PHASE 2. BAG_PICKUP     ─ 쓰레기 봉투 감지 → 집기 → 테이블에 붓기
+  PHASE 2. BAG_PICKUP     ─ 고정 좌표로 봉투 집기 → 테이블에 붓기 (디텍션 없음)
   PHASE 3. SWEEP          ─ 주걱으로 쓰레기 훑어 이격
   PHASE 4. SORTING        ─ 음성/UI 명령으로 지정된 종류 순서대로 분류
   PHASE 5. PAUSED         ─ 일시정지 (현재 동작 완료 후 대기)
@@ -130,10 +130,17 @@ class ManagerNode(Node):
         self.declare_parameter("status_rate",       2.0)
         self.declare_parameter("action_timeout",   40.0)
         self.declare_parameter("retry_limit",          2)
+        # 쓰레기봉투 고정 좌표 (카메라 기준 3D, 단위: m)
+        self.declare_parameter("bag_x_m",  0.0)
+        self.declare_parameter("bag_y_m",  0.0)
+        self.declare_parameter("bag_z_m",  0.5)
 
         self._status_rate    = self.get_parameter("status_rate").value
         self._action_timeout = self.get_parameter("action_timeout").value
         self._retry_limit    = self.get_parameter("retry_limit").value
+        self._bag_x_m        = self.get_parameter("bag_x_m").value
+        self._bag_y_m        = self.get_parameter("bag_y_m").value
+        self._bag_z_m        = self.get_parameter("bag_z_m").value
 
         # ── 내부 상태 ────────────────────────────────────────
         self._lock         = threading.Lock()
@@ -158,9 +165,6 @@ class ManagerNode(Node):
         self._det_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._det_seq   = 0
         self._seen_ids: set[int] = set()
-
-        # BAG_PICKUP 페이즈용 봉투 감지 결과 저장
-        self._pending_bag_det = None   # Detection2D | None
 
         # PAUSE/RESUME 동기화
         self._pause_event = threading.Event()
@@ -188,11 +192,6 @@ class ManagerNode(Node):
             self._status_pub = self.create_publisher(SystemStatus, "/recycle/response", 10)
         else:
             self._status_pub = self.create_publisher(String, "/recycle/response", 10)
-
-        # vision_node 감지 모드 전환 (BAG / TRASH)
-        # std_msgs/String 사용 – 인터페이스 설치 여부 무관
-        self._vision_mode_pub = self.create_publisher(
-            String, "/recycle/vision/mode", 10)
 
         # ── 액션 클라이언트 ──────────────────────────────────
         if INTERFACES_AVAILABLE:
@@ -272,24 +271,7 @@ class ManagerNode(Node):
     # ═══════════════════════════════════════════════════════
 
     def _vision_cb(self, msg):
-        """
-        페이즈별 처리:
-          BAG_PICKUP → 봉투(trash_bag) 감지 결과를 _pending_bag_det 에 저장
-          SORTING    → 쓰레기 감지 결과를 우선순위 큐에 삽입
-        """
-        if self._phase == Phase.BAG_PICKUP:
-            # 봉투 레이블만 받아서 저장 (첫 번째 감지 결과 사용)
-            for det in msg.detections:
-                if det.label.lower() in ("trash_bag", "bag", "plastic_bag"):
-                    if self._pending_bag_det is None:
-                        self._pending_bag_det = det
-                        self.get_logger().info(
-                            f"[VISION] Bag detected: id={det.id} "
-                            f"3d=({det.x_m:.3f},{det.y_m:.3f},{det.z_m:.3f})"
-                        )
-                    break
-            return
-
+        """SORTING 페이즈: 쓰레기 감지 결과를 우선순위 큐에 삽입."""
         if self._phase != Phase.SORTING:
             return
 
@@ -364,41 +346,26 @@ class ManagerNode(Node):
     def _run_bag_pickup(self):
         self.get_logger().info("[PHASE] BAG_PICKUP")
 
-        # vision_node 를 BAG 감지 모드로 전환
-        self._publish_vision_mode("BAG")
-
         with self._lock:
-            self._pending_bag_det  = None   # 이전 감지 결과 초기화
             self._current_label    = "trash_bag"
             self._current_bin      = "TABLE"
-            self._current_phase_fb = "DETECTING_BAG"
-            self._last_message     = "Detecting trash bag..."
-
-        # 봉투 감지 대기 (최대 10초)
-        self.get_logger().info("[BAG_PICKUP] Waiting for bag detection...")
-        deadline = time.time() + 10.0
-        while time.time() < deadline:
-            if self._pending_bag_det is not None:
-                break
-            time.sleep(0.1)
-
-        bag_det = self._pending_bag_det
-        if bag_det is None:
-            self.get_logger().warn("[BAG_PICKUP] Bag not detected within timeout.")
-        else:
-            self.get_logger().info(
-                f"[BAG_PICKUP] Bag at 3D=({bag_det.x_m:.3f},"
-                f"{bag_det.y_m:.3f},{bag_det.z_m:.3f})m"
+            self._current_phase_fb = "BAG_PICKUP"
+            self._last_message     = (
+                f"Picking up bag at fixed coords "
+                f"({self._bag_x_m:.3f},{self._bag_y_m:.3f},{self._bag_z_m:.3f})m"
             )
 
-        # exec_node 에 봉투 좌표 포함한 액션 전송
-        success = self._send_bag_pickup(bag_det)
+        self.get_logger().info(
+            f"[BAG_PICKUP] Fixed coords: "
+            f"({self._bag_x_m:.3f},{self._bag_y_m:.3f},{self._bag_z_m:.3f})m"
+        )
+
+        success = self._send_bag_pickup()
 
         with self._lock:
             self._current_label    = ""
             self._current_bin      = ""
             self._current_phase_fb = ""
-            self._pending_bag_det  = None
             if success:
                 self._last_message = "Bag emptied onto table. Starting sweep."
                 self._phase        = Phase.SWEEP
@@ -418,10 +385,7 @@ class ManagerNode(Node):
 
         success = self._send_exec_command("SWEEP")
 
-        # SORTING 진입 전:
-        #   1. vision_node 를 TRASH 감지 모드로 전환
-        #   2. 이전 감지 ID / 큐 초기화 (새 봉투 내용물을 처음부터 인식)
-        self._publish_vision_mode("TRASH")
+        # SORTING 진입 전: 이전 감지 ID / 큐 초기화 (새 봉투 내용물을 처음부터 인식)
         with self._lock:
             self._seen_ids.clear()
             # PriorityQueue 내부 큐 비우기
@@ -509,15 +473,16 @@ class ManagerNode(Node):
             return False
 
         goal          = PickPlace.Goal()
-        goal.detection_id = det.id
-        goal.label        = det.label
-        goal.pick_cx      = det.cx
-        goal.pick_cy      = det.cy
-        goal.has_3d       = det.has_3d
-        goal.pick_x_m     = det.x_m
-        goal.pick_y_m     = det.y_m
-        goal.pick_z_m     = det.z_m
-        goal.bin_id       = bin_id
+        goal.detection_id  = det.id
+        goal.label         = det.label
+        goal.pick_cx       = det.cx
+        goal.pick_cy       = det.cy
+        goal.has_3d        = det.has_3d
+        goal.pick_x_m      = det.x_m
+        goal.pick_y_m      = det.y_m
+        goal.pick_z_m      = det.z_m
+        goal.pick_angle_deg = float(getattr(det, "angle_deg", 0.0))
+        goal.bin_id        = bin_id
 
         send_fut = self._action_client.send_goal_async(
             goal, feedback_callback=self._feedback_cb)
@@ -590,13 +555,8 @@ class ManagerNode(Node):
             self._current_phase_fb = fb.phase
             self._current_progress = fb.progress
 
-    def _send_bag_pickup(self, bag_det) -> bool:
-        """
-        봉투 집기 액션 전송.
-        bag_det 이 있으면 실제 3D 좌표를 goal 에 포함,
-        없으면 (감지 실패) 좌표 없이 BAG_PICKUP 특수 명령만 전송.
-        exec_node 는 label="BAG_PICKUP" 으로 분기 처리.
-        """
+    def _send_bag_pickup(self) -> bool:
+        """고정 좌표로 봉투 집기 액션 전송. exec_node 는 label="BAG_PICKUP" 으로 분기 처리."""
         if self._action_client is None:
             self.get_logger().info("[BAG_PICKUP] sim: success")
             time.sleep(3.0)
@@ -609,24 +569,11 @@ class ManagerNode(Node):
         goal              = PickPlace.Goal()
         goal.label        = "BAG_PICKUP"
         goal.bin_id       = "BAG_PICKUP"
-
-        if bag_det is not None:
-            # 감지된 봉투 좌표 전달
-            goal.detection_id = bag_det.id
-            goal.pick_cx      = bag_det.cx
-            goal.pick_cy      = bag_det.cy
-            goal.has_3d       = bag_det.has_3d
-            goal.pick_x_m     = bag_det.x_m
-            goal.pick_y_m     = bag_det.y_m
-            goal.pick_z_m     = bag_det.z_m
-        else:
-            # 감지 실패 → 좌표 없이 전달 (exec_node 에서 현재 포즈 기준으로 처리)
-            goal.detection_id = -1
-            goal.has_3d       = False
-            goal.pick_x_m     = 0.0
-            goal.pick_y_m     = 0.0
-            goal.pick_z_m     = 0.0
-            self.get_logger().warn("[BAG_PICKUP] No bag detected – sending without coords.")
+        goal.detection_id = -1
+        goal.has_3d       = True
+        goal.pick_x_m     = float(self._bag_x_m)
+        goal.pick_y_m     = float(self._bag_y_m)
+        goal.pick_z_m     = float(self._bag_z_m)
 
         send_fut = self._action_client.send_goal_async(
             goal, feedback_callback=self._feedback_cb)
@@ -648,17 +595,6 @@ class ManagerNode(Node):
             f"[BAG_PICKUP] success={result.success} msg='{result.message}'"
         )
         return result.success
-
-    def _publish_vision_mode(self, mode: str):
-        """
-        vision_node 에 감지 모드 변경 요청.
-          mode = "BAG"   → 봉투 감지 모드
-          mode = "TRASH" → 쓰레기 분류 감지 모드
-        """
-        msg      = String()
-        msg.data = mode
-        self._vision_mode_pub.publish(msg)
-        self.get_logger().info(f"[VISION MODE] → {mode}")
 
     # ═══════════════════════════════════════════════════════
     #  상태 발행

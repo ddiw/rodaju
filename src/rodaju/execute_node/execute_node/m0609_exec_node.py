@@ -4,7 +4,7 @@ m0609_exec_node.py  ─  로봇 동작 수행 노드
 ═══════════════════════════════════════════════════════════════
 
 [담당 동작]
-  1. BAG_PICKUP  ─ 봉투 감지 → 집기 → 테이블 위에서 뒤집어 붓기
+  1. BAG_PICKUP  ─ 고정 좌표로 봉투 집기 → 테이블 위에서 뒤집어 붓기
   2. SWEEP       ─ 주걱 동작으로 쓰레기 이격
   3. PICK_PLACE  ─ 쓰레기 집기 → 종류별 분류함에 투입
   4. HOME        ─ 홈 포지션 복귀
@@ -62,7 +62,7 @@ except ImportError:
     print("[WARN] DSR_ROBOT2 not available – simulation mode.")
 
 try:
-    from onrobot import RG
+    from execute_node.onrobot import RG
     GRIPPER_AVAILABLE = True
 except ImportError:
     GRIPPER_AVAILABLE = False
@@ -97,9 +97,9 @@ PICK_Z_OFFSET     = -8.0
 
 # 분류함 위치 (로봇 베이스 좌표계)
 BIN_POSITIONS: dict[str, list] = {
-    "BIN_PLASTIC": [450.0, -260.0, 180.0, 180.0, 0.0, 90.0],   # 500ml 페트병
-    "BIN_CAN"    : [450.0,    0.0, 180.0, 180.0, 0.0, 90.0],   # 캔
-    "BIN_PAPER"  : [450.0,  260.0, 180.0, 180.0, 0.0, 90.0],   # 종이컵
+    "BIN_PLASTIC": [150.0, -470.0, 100.0, 0.0, -180.0, 0.0],   # 500ml 페트병
+    "BIN_CAN"    : [350.0, -470.0, 100.0, 0.0, -180.0, 0.0],   # 캔
+    "BIN_PAPER"  : [550.0, -470.0, 100.0, 0.0, -180.0, 0.0],   # 종이컵
 }
 
 # 분류 종류별 그리퍼 파라미터 (force: 1/10 N, width: 1/10 mm)
@@ -203,6 +203,11 @@ class M0609ExecNode(Node):
     def __init__(self):
         super().__init__("m0609_exec_node")
 
+        # OBB 각도→그리퍼 RZ 보정값 (카메라 마운팅에 따라 조정)
+        # 예: 카메라 x축이 로봇 y축 방향이면 90.0, 반대면 -90.0
+        self.declare_parameter("gripper_angle_offset_deg", -90.0)
+        self._gripper_angle_offset = self.get_parameter("gripper_angle_offset_deg").value
+
         self.robot   = RobotAPI()
         self.gripper = GripperAPI()
         self._busy   = False
@@ -269,7 +274,7 @@ class M0609ExecNode(Node):
             # ── 특수 명령 분기 ──────────────────────────────
             if goal.label in ("BAG_PICKUP", "SWEEP", "HOME"):
                 if goal.label == "BAG_PICKUP":
-                    success = self._do_bag_pickup(fb)
+                    success = self._do_bag_pickup(goal, fb)
                 elif goal.label == "SWEEP":
                     success = self._do_sweep(fb)
                 else:
@@ -302,26 +307,28 @@ class M0609ExecNode(Node):
     #  동작 1: 봉투 집어서 테이블에 붓기
     # ══════════════════════════════════════════════════════
 
-    def _do_bag_pickup(self, fb) -> bool:
+    def _do_bag_pickup(self, goal, fb) -> bool:
         """
-        1. 봉투 위 접근
-        2. 봉투 파지 (최대 힘)
-        3. 들어올리기
-        4. 테이블 중앙으로 이동
-        5. 뒤집어 붓기 (Z축 회전)
-        6. 그리퍼 열기 → 홈
+        1. 고정 좌표로 봉투 위치 산출
+        2. 봉투 위 접근
+        3. 봉투 파지 (최대 힘)
+        4. 들어올리기
+        5. 테이블 중앙으로 이동
+        6. 뒤집어 붓기 (Z축 회전)
+        7. 그리퍼 열기 → 홈
         """
-        fb("BAG_DETECT", 5.0)
         self.get_logger().info("[BAG_PICKUP] Starting bag pickup sequence.")
 
         gp = GRIPPER_PARAMS["BAG"]
 
-        # 현재 포즈 기반 봉투 위치 (실제 시스템에서는 vision_node 좌표 활용)
-        bag_pos = self.robot.get_posx()
-        bag_pos[2] = TABLE_CENTER_POS[2] + 60.0   # 봉투 높이 추정
+        # manager_node 에서 전달받은 고정 좌표 사용
+        bag_pos = self._cam_to_robot(goal.pick_x_m, goal.pick_y_m, goal.pick_z_m)
+        self.get_logger().info(
+            f"[BAG_PICKUP] Target: ({bag_pos[0]:.1f},{bag_pos[1]:.1f},{bag_pos[2]:.1f})mm"
+        )
 
         # 1. 접근
-        fb("APPROACH", 15.0)
+        fb("APPROACH", 10.0)
         approach = list(bag_pos)
         approach[2] += BAG_APPROACH_Z_OFFSET
         self.robot.movel(approach)
@@ -441,6 +448,16 @@ class M0609ExecNode(Node):
         else:
             target = self._pixel_estimate(goal.pick_cx, goal.pick_cy)
 
+        # OBB 각도로 그리퍼 RZ 설정
+        # pick_angle_deg: 카메라 이미지 평면에서 객체 장축 방향 (°)
+        # gripper_angle_offset: 카메라 마운팅 보정값 (파라미터로 조정)
+        pick_rz = target[5] + goal.pick_angle_deg + self._gripper_angle_offset
+        target[5] = pick_rz % 360.0
+        self.get_logger().info(
+            f"[PICK] label={goal.label} obb_angle={goal.pick_angle_deg:.1f}° "
+            f"offset={self._gripper_angle_offset:.1f}° -> rz={target[5]:.1f}°"
+        )
+
         approach  = list(target); approach[2]  += APPROACH_Z_OFFSET
         pick_pos  = list(target); pick_pos[2]  += PICK_Z_OFFSET
         bin_above = list(bin_pos); bin_above[2] += APPROACH_Z_OFFSET
@@ -471,9 +488,8 @@ class M0609ExecNode(Node):
         self.robot.movel(approach)
         self.robot.mwait()
 
-        # 4. MOVE_BIN
+        # 4. MOVE_BIN (LIFT 위치에서 bin_above로 직접 이동 – J_HOME 경유 시 singularity 발생)
         fb("MOVE_BIN", 65.0)
-        self._go_home()
         self.robot.movel(bin_above)
         self.robot.mwait()
 
@@ -564,10 +580,11 @@ class M0609ExecNode(Node):
     #  공통
     # ══════════════════════════════════════════════════════
 
-    def _go_home(self):
+    def _go_home(self, open_gripper: bool = True):
         self.robot.movej(J_HOME, vel=VELOCITY, acc=ACC)
         self.robot.mwait()
-        self.gripper.open()
+        if open_gripper:
+            self.gripper.open()
 
 
 def main(args=None):

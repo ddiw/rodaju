@@ -4,8 +4,8 @@ vision_node.py  ─  카메라 인식 노드
 ═══════════════════════════════════════════════════════════════
 
 [감지 모드]
-  BAG_MODE    ─ 쓰레기 봉투 감지 (BAG_PICKUP 페이즈)
   TRASH_MODE  ─ 개별 쓰레기 감지 + 분류 (SORTING 페이즈)
+  ※ 쓰레기 봉투는 고정 좌표 사용 (디텍션 없음)
 
 [처리 흐름]
   RGB 이미지 수신
@@ -41,7 +41,7 @@ try:
     from vision_node.yolo import YoloModel
     YOLO_AVAILABLE = True
 except Exception as _yolo_err:
-    print(f"[WARN] YoloModel import failed: {_yolo_err}")
+    print(f"[WARN] YoloModel import failed: {_yolo_err}")  # 디버깅
     YOLO_AVAILABLE = False
 
 
@@ -52,28 +52,24 @@ except Exception as _yolo_err:
 # YOLO 클래스 → 분류 레이블 정규화
 LABEL_NORM: dict[str, str] = {
     # 500ml 생수 페트병
-    "plastic"       : "pet",
-    "plastic_bottle": "pet",
-    "bottle"        : "pet",
-    "pet_bottle"    : "pet",
-    "water_bottle"  : "pet",
-    # 캔
-    "can"           : "can",
-    "tin_can"       : "can",
-    "aluminum_can"  : "can",
-    "metal"         : "can",
-    # 종이컵
-    "paper"         : "paper_cup",
-    "paper_cup"     : "paper_cup",
-    "cup"           : "paper_cup",
-    # 봉투 클래스
-    "trash_bag"     : "trash_bag",
-    "bag"           : "trash_bag",
-    "plastic_bag"   : "trash_bag",
+    # "plastic"       : "pet",
+    # "plastic_bottle": "pet",
+    # "bottle"        : "pet",
+    # "pet_bottle"    : "pet",
+    # "water_bottle"  : "pet",
+    # # 캔
+    # "can"           : "can",
+    # "tin_can"       : "can",
+    # "aluminum_can"  : "can",
+    # "metal"         : "can",
+    # # 종이컵
+    # "paper"         : "paper_cup",
+    # "paper_cup"     : "paper_cup",
+    # "cup"           : "paper_cup",
 }
 
-# 봉투 레이블 (BAG 모드 필터에 사용)
-BAG_LABELS = {"trash_bag", "bag", "plastic_bag"}
+# 봉투 레이블 (필터링용 - 디텍션에서 제외)
+_BAG_LABELS = {"trash_bag", "bag", "plastic_bag"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -87,7 +83,7 @@ class VisionNode(Node):
 
         # ── 파라미터 ────────────────────────────────────────
         self.declare_parameter("publish_rate",    10.0)
-        self.declare_parameter("conf_threshold",   0.25)
+        self.declare_parameter("conf_threshold",   0.70)
         self.declare_parameter("depth_scale",      0.001)  # mm → m
         self.declare_parameter("depth_roi_radius",    3)   # 중심 주변 평균 반경
 
@@ -102,7 +98,6 @@ class VisionNode(Node):
         self._depth_frame = None
         self._intrinsics  = None
         self._det_id_cnt  = 0
-        self._detect_mode = "TRASH"   # "BAG" | "TRASH"  (manager_node 요청으로 변경 가능)
 
         # ── YOLO ────────────────────────────────────────────
         if YOLO_AVAILABLE:
@@ -120,11 +115,6 @@ class VisionNode(Node):
             self._depth_cb, qos)
         self.create_subscription(CameraInfo, "/camera/camera/color/camera_info",
             self._info_cb, qos)
-
-        # 감지 모드 제어 토픽 (manager_node 에서 발행)
-        from std_msgs.msg import String as Str
-        self.create_subscription(Str, "/recycle/vision/mode",
-            self._mode_cb, 10)
 
         # ── 발행 ────────────────────────────────────────────
         if INTERFACES_AVAILABLE:
@@ -155,14 +145,6 @@ class VisionNode(Node):
             }
             self.get_logger().info(f"Intrinsics: {self._intrinsics}")
 
-    def _mode_cb(self, msg):
-        """manager_node 에서 감지 모드 변경."""
-        mode = msg.data.upper()
-        if mode in ("BAG", "TRASH"):
-            old = self._detect_mode
-            self._detect_mode = mode
-            self.get_logger().info(f"[MODE] {old} → {mode}")
-
     # ═══════════════════════════════════════════════════════
     #  감지 + 발행 (타이머)
     # ═══════════════════════════════════════════════════════
@@ -176,12 +158,8 @@ class VisionNode(Node):
         dets = []
 
         for raw in raws:
-            is_bag = raw["label"] in ("trash_bag", "bag", "plastic_bag")
-
-            # 모드별 필터
-            if self._detect_mode == "BAG"   and not is_bag:
-                continue
-            if self._detect_mode == "TRASH" and is_bag:
+            # 쓰레기봉투는 고정 좌표 사용 → 디텍션에서 제외
+            if raw["label"] in _BAG_LABELS:
                 continue
 
             det = self._build_detection(raw)
@@ -219,7 +197,7 @@ class VisionNode(Node):
             msg.detections = dets
             self._pub.publish(msg)
             self.get_logger().debug(
-                f"[VISION] Published {len(dets)} detections (mode={self._detect_mode})"
+                f"[VISION] Published {len(dets)} detections"
             )
         except Exception:
             from std_msgs.msg import String as Str
@@ -254,10 +232,15 @@ class VisionNode(Node):
                     x1, y1, x2, y2 = [int(v) for v in box]
                     raw_label = res.names[int(cls)]
                     label     = LABEL_NORM.get(raw_label.lower(), raw_label.lower())
-                    # OBB면 4개 꼭짓점 저장
-                    points = None
-                    if is_obb and hasattr(boxes_src, "xyxyxyxy"):
-                        points = boxes_src.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+                    # OBB: 4개 꼭짓점 + 회전 각도(rad→deg) 저장
+                    points    = None
+                    angle_deg = 0.0
+                    if is_obb:
+                        if hasattr(boxes_src, "xyxyxyxy"):
+                            points = boxes_src.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+                        if hasattr(boxes_src, "xywhr"):
+                            import math
+                            angle_deg = float(boxes_src.xywhr[i][4].item()) * 180.0 / math.pi
                     dets.append({
                         "label"     : label,
                         "confidence": float(score),
@@ -266,9 +249,8 @@ class VisionNode(Node):
                         "cx": (x1 + x2) // 2,
                         "cy": (y1 + y2) // 2,
                         "points"    : points,
+                        "angle_deg" : angle_deg,
                     })
-            if dets:
-                self.get_logger().info(f"[YOLO] {[(d['label'], round(d['confidence'],2)) for d in dets]}")
             return dets
         except Exception as e:
             self.get_logger().error(f"YOLO error: {e}")
@@ -292,6 +274,7 @@ class VisionNode(Node):
             x_m, y_m, z_m = self._pixel_to_3d(raw["cx"], raw["cy"])
             det.has_3d = z_m > 0.01
             det.x_m, det.y_m, det.z_m = float(x_m), float(y_m), float(z_m)
+            det.angle_deg = float(raw.get("angle_deg", 0.0))
             return det
         except Exception as e:
             self.get_logger().warn(f"Build detection error: {e}")
