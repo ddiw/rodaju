@@ -19,6 +19,8 @@ import os
 import time
 import threading
 
+from ament_index_python.packages import get_package_share_directory
+
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -29,9 +31,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 import DR_init
 
 # ── Hand-Eye 캘리브레이션 파일 경로 ──────────────────────────────
-# 실제 npy 파일 위치로 수정하세요
 T_GRIPPER2CAM_PATH = os.path.join(
-    os.path.dirname(__file__), "resource", "T_gripper2camera.npy"
+    get_package_share_directory("execute_node"), "resource", "T_gripper2camera.npy"
 )
 
 try:
@@ -76,6 +77,10 @@ except ImportError:
 # 홈 조인트 각도
 J_HOME = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
 
+# 테이블 위 작업 시작 관절 자세 (J_HOME 이후 movel singularity 방지용)
+# ※ 로봇을 직접 조그해서 테이블 위 안전 위치로 이동 후 관절값을 읽어 입력
+J_WORK = [-11.0, 26.0, 19.0, 0.0, 133.0, -12.0]   # TODO: 실제 값으로 교체 필요
+
 # 테이블 중심 (봉투를 붓는 위치)
 TABLE_CENTER_POS = [350.0, 0.0, 120.0, 180.0, 0.0, 90.0]
 
@@ -93,7 +98,16 @@ SWEEP_STEP_Y   = 60.0     # Y 스텝 간격 (mm)
 
 # pick & place
 APPROACH_Z_OFFSET = 80.0
-PICK_Z_OFFSET     = -8.0
+PICK_Z_OFFSET     = 0.0
+
+# J_HOME에서 movel로 도달 가능한 안전 경유점 (singularity 방지용)
+# PICK_PLACE 로그에서 이 위치는 J_HOME → movel로 정상 도달 확인됨
+WORK_APPROACH_POS = [
+    TABLE_CENTER_POS[0],
+    TABLE_CENTER_POS[1],
+    TABLE_CENTER_POS[2] + APPROACH_Z_OFFSET,
+    180.0, 0.0, 90.0,
+]
 
 # 분류함 위치 (로봇 베이스 좌표계)
 BIN_POSITIONS: dict[str, list] = {
@@ -104,11 +118,11 @@ BIN_POSITIONS: dict[str, list] = {
 
 # 분류 종류별 그리퍼 파라미터 (force: 1/10 N, width: 1/10 mm)
 GRIPPER_PARAMS: dict[str, dict] = {
-    "BIN_PLASTIC": {"force": 150, "width": 600},   # 페트병 (부드럽게)
-    "BIN_CAN"    : {"force": 350, "width": 500},   # 캔 (단단하게)
-    "BIN_PAPER"  : {"force":  80, "width": 700},   # 종이컵 (매우 부드럽게)
-    "DEFAULT"    : {"force": 200, "width": 600},
-    "BAG"        : {"force": 400, "width": 800},   # 봉투 (최대힘)
+    "BIN_PLASTIC": {"force": 150, "width": 1000},   # 페트병 (부드럽게)
+    "BIN_CAN"    : {"force": 350, "width": 1000},   # 캔 (단단하게)
+    "BIN_PAPER"  : {"force":  80, "width": 1000},   # 종이컵 (매우 부드럽게)
+    "DEFAULT"    : {"force": 200, "width": 1000},
+    "BAG"        : {"force": 400, "width": 1000},   # 봉투 (최대힘)
 }
 
 
@@ -318,6 +332,10 @@ class M0609ExecNode(Node):
         7. 그리퍼 열기 → 홈
         """
         self.get_logger().info("[BAG_PICKUP] Starting bag pickup sequence.")
+        # self._transit_to_work()
+
+        # J_WORK 자세각 사용 – orientation mismatch 방지
+        ori = self.robot.get_posx()[3:]
 
         gp = GRIPPER_PARAMS["BAG"]
 
@@ -354,15 +372,14 @@ class M0609ExecNode(Node):
 
         # 4. 테이블 중앙으로 이동
         fb("MOVE_TO_TABLE", 60.0)
-        pour_approach = list(TABLE_CENTER_POS)
+        pour_approach = TABLE_CENTER_POS[:3] + [ori[0], ori[1], (ori[2] + 0.0) % 360.0]
         pour_approach[2] += 100.0
         self.robot.movel(pour_approach)
         self.robot.mwait()
 
         # 5. 뒤집어 붓기 (TCP 회전으로 봉투 역전)
         fb("POUR", 75.0)
-        pour_pos = list(TABLE_CENTER_POS)
-        pour_pos[5] += 180.0   # RZ 180° (봉투 입구를 아래로)
+        pour_pos = TABLE_CENTER_POS[:3] + [ori[0], ori[1], (ori[2] + 180.0) % 360.0]
         self.robot.movel(pour_pos, vel=VELOCITY_SLOW)
         self.robot.mwait()
         self.gripper.open(force=gp["force"])
@@ -389,35 +406,35 @@ class M0609ExecNode(Node):
         """
         fb("SWEEP_START", 5.0)
         self.get_logger().info("[SWEEP] Starting sweep sequence.")
+        # self._transit_to_work()
+
+        # J_WORK 자세각을 그대로 사용 – 하드코딩 orientation으로 movel 하면
+        # arm configuration mismatch로 DSR이 거부함
+        ori = self.robot.get_posx()[3:]
 
         cx, cy = TABLE_CENTER_POS[0], TABLE_CENTER_POS[1]
         n_steps = int(SWEEP_RANGE_Y / SWEEP_STEP_Y) + 1
-        total   = n_steps * 2   # 각 스텝 왕복
 
         for i, step in enumerate(range(n_steps)):
             y_pos = cy - SWEEP_RANGE_Y / 2 + step * SWEEP_STEP_Y
 
             # 해당 Y 줄 접근 (위에서)
-            above = [cx - SWEEP_RANGE_X / 2, y_pos, SWEEP_Z + 50.0,
-                     180.0, 0.0, 90.0]
+            above = [cx - SWEEP_RANGE_X / 2, y_pos, SWEEP_Z + 50.0] + ori
             self.robot.movel(above, vel=VELOCITY)
             self.robot.mwait()
 
             # 왼쪽 시작점 내려오기
-            start = [cx - SWEEP_RANGE_X / 2, y_pos, SWEEP_Z,
-                     180.0, 0.0, 90.0]
+            start = [cx - SWEEP_RANGE_X / 2, y_pos, SWEEP_Z] + ori
             self.robot.movel(start, vel=VELOCITY_SLOW)
             self.robot.mwait()
 
             # → 오른쪽 끝으로 밀기
-            end = [cx + SWEEP_RANGE_X / 2, y_pos, SWEEP_Z,
-                   180.0, 0.0, 90.0]
+            end = [cx + SWEEP_RANGE_X / 2, y_pos, SWEEP_Z] + ori
             self.robot.movel(end, vel=VELOCITY_SLOW)
             self.robot.mwait()
 
             # 들어올리기
-            above_end = [cx + SWEEP_RANGE_X / 2, y_pos, SWEEP_Z + 50.0,
-                         180.0, 0.0, 90.0]
+            above_end = [cx + SWEEP_RANGE_X / 2, y_pos, SWEEP_Z + 50.0] + ori
             self.robot.movel(above_end, vel=VELOCITY)
             self.robot.mwait()
 
@@ -457,10 +474,17 @@ class M0609ExecNode(Node):
             f"[PICK] label={goal.label} obb_angle={goal.pick_angle_deg:.1f}° "
             f"offset={self._gripper_angle_offset:.1f}° -> rz={target[5]:.1f}°"
         )
+        self.get_logger().info(
+            f"[PICK] cam=({goal.pick_x_m*1000:.1f},{goal.pick_y_m*1000:.1f},{goal.pick_z_m*1000:.1f})mm "
+            f"-> target=({target[0]:.1f},{target[1]:.1f},{target[2]:.1f})mm "
+            f"approach_z={target[2]+APPROACH_Z_OFFSET:.1f}mm pick_z={target[2]+PICK_Z_OFFSET:.1f}mm"
+        )
 
         approach  = list(target); approach[2]  += APPROACH_Z_OFFSET
         pick_pos  = list(target); pick_pos[2]  += PICK_Z_OFFSET
         bin_above = list(bin_pos); bin_above[2] += APPROACH_Z_OFFSET
+
+        self._transit_to_work()
 
         # 1. APPROACH
         fb("APPROACH", 10.0)
@@ -545,8 +569,7 @@ class M0609ExecNode(Node):
         base2gripper  = self._posx_to_matrix(robot_posx)
 
         # 변환
-        base2cam = base2gripper @ self._T_gripper2cam
-        td_coord = np.dot(base2cam, coord)          # shape (4,)
+        td_coord = np.dot(base2gripper @ self._T_gripper2cam, coord)  # shape (4,)
 
         # 후처리
         DEPTH_OFFSET = -5.0   # mm
@@ -585,6 +608,11 @@ class M0609ExecNode(Node):
         self.robot.mwait()
         if open_gripper:
             self.gripper.open()
+
+    def _transit_to_work(self):
+        """J_HOME 이후 작업 영역 진입 – movej로 singularity 없이 이동."""
+        self.robot.movej(J_WORK)
+        self.robot.mwait()
 
 
 def main(args=None):
