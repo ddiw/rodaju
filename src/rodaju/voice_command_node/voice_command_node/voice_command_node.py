@@ -181,29 +181,32 @@ _PROMPT = """
 {{
   "cmd": "명령어",
   "mode": "sorting | stop | standby | (빈 문자열)",
-  "priority": "PLASTIC | CAN | PAPER | NONE",
+  "priority_order": ["우선순위 순서대로 나열 (PLASTIC|CAN|PAPER), 없으면 빈 배열"],
   "exclude": ["제외할 카테고리 목록"],
   "raw_text": "원본 텍스트"
 }}
 
 <예시>
 입력: "분류 시작해"
-출력: {{"cmd":"START","mode":"sorting","priority":"NONE","exclude":[],"raw_text":"분류 시작해"}}
+출력: {{"cmd":"START","mode":"sorting","priority_order":[],"exclude":[],"raw_text":"분류 시작해"}}
 
 입력: "페트병 먼저 분류해줘"
-출력: {{"cmd":"SET_POLICY","mode":"","priority":"PLASTIC","exclude":[],"raw_text":"페트병 먼저 분류해줘"}}
+출력: {{"cmd":"SET_POLICY","mode":"","priority_order":["PLASTIC"],"exclude":[],"raw_text":"페트병 먼저 분류해줘"}}
+
+입력: "플라스틱 캔 순서대로 분류해줘"
+출력: {{"cmd":"SET_POLICY","mode":"","priority_order":["PLASTIC","CAN"],"exclude":[],"raw_text":"플라스틱 캔 순서대로 분류해줘"}}
 
 입력: "캔이랑 종이컵만 분류해"
-출력: {{"cmd":"SET_POLICY","mode":"","priority":"NONE","exclude":["PLASTIC"],"raw_text":"캔이랑 종이컵만 분류해"}}
+출력: {{"cmd":"SET_POLICY","mode":"","priority_order":[],"exclude":["PLASTIC"],"raw_text":"캔이랑 종이컵만 분류해"}}
 
 입력: "잠깐 멈춰"
-출력: {{"cmd":"PAUSE","mode":"","priority":"NONE","exclude":[],"raw_text":"잠깐 멈춰"}}
+출력: {{"cmd":"PAUSE","mode":"","priority_order":[],"exclude":[],"raw_text":"잠깐 멈춰"}}
 
 입력: "다시 시작해"
-출력: {{"cmd":"RESUME","mode":"sorting","priority":"NONE","exclude":[],"raw_text":"다시 시작해"}}
+출력: {{"cmd":"RESUME","mode":"sorting","priority_order":[],"exclude":[],"raw_text":"다시 시작해"}}
 
 입력: "다 주워"
-출력: {{"cmd":"SET_POLICY","mode":"","priority":"NONE","exclude":[],"raw_text":"다 주워"}}
+출력: {{"cmd":"SET_POLICY","mode":"","priority_order":[],"exclude":[],"raw_text":"다 주워"}}
 
 <사용자 입력>
 "{user_input}"
@@ -239,6 +242,13 @@ class LLMCommandParser:
             raw      = response.content.strip()
             print(f"[LLM] 응답: {raw}")
 
+            # 마크다운 코드블록 제거 (```json ... ``` 형태 대응)
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+
             # JSON 파싱
             data = json.loads(raw)
 
@@ -247,17 +257,21 @@ class LLMCommandParser:
             for cat in data.get("exclude", []):
                 exclude_mask |= EXCLUDE_BITS.get(cat.upper(), 0)
 
+            # priority_order 정규화
+            priority_order = [p.upper() for p in data.get("priority_order", [])
+                              if p.upper() in EXCLUDE_BITS]
+
             cmd = data.get("cmd", "NOOP").upper()
             if cmd == "STANDBY":
                 cmd  = "START"
                 data["mode"] = "standby"
 
             result = {
-                "cmd"         : cmd,
-                "mode"        : data.get("mode", ""),
-                "priority"    : data.get("priority", "NONE").upper(),
-                "exclude_mask": exclude_mask,
-                "raw_text"    : text,
+                "cmd"          : cmd,
+                "mode"         : data.get("mode", ""),
+                "priority_order": priority_order,
+                "exclude_mask" : exclude_mask,
+                "raw_text"     : text,
             }
 
             print(f"[LLM] 파싱결과: {result}")
@@ -435,16 +449,16 @@ class VoiceCommandNode(Node):
     def _publish(self, parsed: dict):
         try:
             msg              = SortCommand()
-            msg.stamp        = self.get_clock().now().to_msg()
-            msg.cmd          = parsed["cmd"]
-            msg.mode         = parsed["mode"]
-            msg.priority     = parsed["priority"]
-            msg.exclude_mask = parsed["exclude_mask"]
-            msg.raw_text     = parsed["raw_text"]
+            msg.stamp          = self.get_clock().now().to_msg()
+            msg.cmd            = parsed["cmd"]
+            msg.mode           = parsed["mode"]
+            msg.priority_order = parsed["priority_order"]
+            msg.exclude_mask   = parsed["exclude_mask"]
+            msg.raw_text       = parsed["raw_text"]
             self._pub.publish(msg)
             self.get_logger().info(
                 f"[CMD 발행] cmd={msg.cmd} mode={msg.mode} "
-                f"priority={msg.priority} exclude={msg.exclude_mask:#04x} "
+                f"priority_order={list(msg.priority_order)} exclude={msg.exclude_mask:#04x} "
                 f"raw='{msg.raw_text}'"
             )
         except Exception as e:

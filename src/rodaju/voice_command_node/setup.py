@@ -10,6 +10,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/resource', [
+            'resource/.env',
+            'resource/hello_rokey_8332_32.tflite',
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,6 +28,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'voice_command_node = voice_command_node.voice_command_node:main',
         ],
     },
 )

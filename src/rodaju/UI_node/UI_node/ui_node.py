@@ -62,7 +62,7 @@ class UIState:
     def __init__(self):
         self.state             = "IDLE"
         self.phase             = "STANDBY"
-        self.priority          = "NONE"
+        self.priority_order: list[str] = []
         self.exclude_mask      = 0
         self.last_message      = "System ready."
         self.progress          = 0.0
@@ -90,7 +90,7 @@ class UIState:
         with self.lock:
             self.state    = msg.state
             self.phase    = msg.mode       # manager_node 는 mode 필드에 phase 값 넣음
-            self.priority = msg.priority
+            self.priority_order = list(msg.priority_order)
             self.exclude_mask = msg.exclude_mask
             self.last_message = msg.last_message
             self.progress = msg.progress
@@ -162,18 +162,18 @@ class UINode(Node):
             f"total={msg.processed_total} | {msg.last_message[:60]}"
         )
 
-    def send_cmd(self, cmd: str, mode: str = "", priority: str = "NONE",
+    def send_cmd(self, cmd: str, mode: str = "", priority_order: list = None,
                  exclude_mask: int = 0, raw: str = ""):
         try:
             msg = SortCommand()
-            msg.stamp        = self.get_clock().now().to_msg()
-            msg.cmd          = cmd
-            msg.mode         = mode
-            msg.priority     = priority
-            msg.exclude_mask = exclude_mask
-            msg.raw_text     = raw or f"UI:{cmd}"
+            msg.stamp          = self.get_clock().now().to_msg()
+            msg.cmd            = cmd
+            msg.mode           = mode
+            msg.priority_order = priority_order or []
+            msg.exclude_mask   = exclude_mask
+            msg.raw_text       = raw or f"UI:{cmd}"
             self._cmd_pub.publish(msg)
-            self._ui.add_log(f"[CMD] {cmd} mode={mode} priority={priority}")
+            self._ui.add_log(f"[CMD] {cmd} mode={mode} priority_order={msg.priority_order}")
         except Exception as e:
             self.get_logger().error(f"Publish error: {e}")
 
@@ -231,7 +231,7 @@ def run_tui(ui: UIState, node: UINode):
             with ui.lock:
                 state    = ui.state
                 phase    = ui.phase
-                priority = ui.priority
+                priority_order = ui.priority_order
                 last_msg = ui.last_message
                 progress = ui.progress
                 cur_lbl  = ui.current_label
@@ -255,7 +255,7 @@ def run_tui(ui: UIState, node: UINode):
             stdscr.addstr(state, sc | curses.A_BOLD)
             stdscr.addstr(r,  20, "Phase  : ", curses.A_BOLD)
             stdscr.addstr(phase, colors["cyan"])
-            stdscr.addstr(r+1, 2, f"Priority: {priority}")
+            stdscr.addstr(r+1, 2, f"Priority: {' > '.join(priority_order) if priority_order else 'NONE'}")
 
             # ── 현재 처리 중인 아이템 ─────────────────────────
             r = 5
@@ -344,13 +344,13 @@ def run_tui(ui: UIState, node: UINode):
             elif key == ord('h'):
                 node.send_cmd("START", mode="standby")
             elif key == ord('1'):
-                node.send_cmd("SET_POLICY", priority="PLASTIC")
+                node.send_cmd("SET_POLICY", priority_order=["PLASTIC"])
             elif key == ord('2'):
-                node.send_cmd("SET_POLICY", priority="CAN")
+                node.send_cmd("SET_POLICY", priority_order=["CAN"])
             elif key == ord('3'):
-                node.send_cmd("SET_POLICY", priority="PAPER")
+                node.send_cmd("SET_POLICY", priority_order=["PAPER"])
             elif key == ord('4'):
-                node.send_cmd("SET_POLICY", priority="TRASH")
+                node.send_cmd("SET_POLICY", priority_order=["TRASH"])
 
     curses.wrapper(draw)
 
@@ -379,13 +379,13 @@ def run_cli(ui: UIState, node: UINode):
         elif c == "home":
             node.send_cmd("START", mode="standby")
         elif c == "1":
-            node.send_cmd("SET_POLICY", priority="PLASTIC")
+            node.send_cmd("SET_POLICY", priority_order=["PLASTIC"])
         elif c == "2":
-            node.send_cmd("SET_POLICY", priority="CAN")
+            node.send_cmd("SET_POLICY", priority_order=["CAN"])
         elif c == "3":
-            node.send_cmd("SET_POLICY", priority="PAPER")
+            node.send_cmd("SET_POLICY", priority_order=["PAPER"])
         elif c == "4":
-            node.send_cmd("SET_POLICY", priority="TRASH")
+            node.send_cmd("SET_POLICY", priority_order=["TRASH"])
         else:
             with ui.lock:
                 print(

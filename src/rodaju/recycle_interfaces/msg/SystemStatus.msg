@@ -2,7 +2,7 @@ builtin_interfaces/Time stamp
 
 string state
 string mode
-string priority
+string[] priority_order
 uint8 exclude_mask
 
 int32 processed_total

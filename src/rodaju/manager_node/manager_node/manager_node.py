@@ -146,7 +146,7 @@ class ManagerNode(Node):
         self._lock         = threading.Lock()
         self._phase        = Phase.STANDBY
         self._state        = SystemState.IDLE
-        self._priority     = "NONE"
+        self._priority_order: list[str] = []
         self._exclude_mask = 0
         self._target_label = "ALL"
 
@@ -257,12 +257,11 @@ class ManagerNode(Node):
                 self._last_message = "Stopping after current task."
 
             elif cmd == "SET_POLICY":
-                if msg.priority:
-                    self._priority = msg.priority
+                if msg.priority_order:
+                    self._priority_order = list(msg.priority_order)
                 self._exclude_mask = msg.exclude_mask
-                # target 업데이트 (target 필드 없을 시 raw_text 에서 파싱 가능)
                 self._last_message = (
-                    f"Policy updated: priority={self._priority} "
+                    f"Policy updated: priority_order={self._priority_order} "
                     f"exclude_mask={self._exclude_mask:#04x}"
                 )
 
@@ -301,9 +300,10 @@ class ManagerNode(Node):
                 self._det_queue.put_nowait((prio, self._det_seq, det))
 
     def _calc_priority(self, cat: str) -> int:
-        if self._priority == cat:
-            return 0
-        return PRIORITY_DEFAULT.get(cat, 99)
+        if cat in self._priority_order:
+            return self._priority_order.index(cat)
+        base = len(self._priority_order)
+        return base + PRIORITY_DEFAULT.get(cat, 99)
 
     # ═══════════════════════════════════════════════════════
     #  메인 워커 스레드 (시나리오 제어)
@@ -606,7 +606,7 @@ class ManagerNode(Node):
             msg.stamp             = self.get_clock().now().to_msg()
             msg.state             = self._state.value
             msg.mode              = self._phase.value
-            msg.priority          = self._priority
+            msg.priority_order    = self._priority_order
             msg.exclude_mask      = self._exclude_mask
             msg.processed_total   = self._counters["total"]
             msg.processed_plastic = self._counters["plastic"]
