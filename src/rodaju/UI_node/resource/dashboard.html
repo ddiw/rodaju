@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recycling Robot Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #e8eaf0; color: #2c2f3a; font-family: 'Segoe UI', sans-serif; font-size: 14px; }
+
+  header {
+    background: #ffffff;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #d0d3de;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  header h1 { font-size: 18px; color: #3a7bd5; letter-spacing: 1px; }
+  #conn-dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; display: inline-block; margin-right: 6px; }
+  #conn-label { font-size: 12px; color: #888; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px;
+  }
+  .card {
+    background: #ffffff;
+    border: 1px solid #d0d3de;
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .card h2 { font-size: 12px; color: #3a7bd5; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+
+  /* 상태 */
+  .status-row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .stat-box { flex: 1; min-width: 100px; }
+  .stat-box .label { font-size: 11px; color: #888; margin-bottom: 4px; }
+  .stat-box .value { font-size: 20px; font-weight: bold; }
+  .RUNNING  { color: #2e7d32; }
+  .PAUSED   { color: #e65100; }
+  .STOPPED  { color: #c62828; }
+  .IDLE     { color: #546e7a; }
+  .ERROR    { color: #c62828; }
+
+  /* 분류함 */
+  .bin-row { margin-bottom: 10px; }
+  .bin-row .bin-label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px; color: #444; }
+  .bar-bg { background: #dde0ea; border-radius: 4px; height: 10px; }
+  .bar-fill { height: 10px; border-radius: 4px; transition: width 0.4s; }
+  .bar-plastic { background: #1976d2; }
+  .bar-can     { background: #c62828; }
+  .bar-paper   { background: #2e7d32; }
+  .bar-trash   { background: #546e7a; }
+
+  /* 통계 */
+  .counters { display: flex; gap: 12px; flex-wrap: wrap; }
+  .counter-box { flex: 1; min-width: 60px; background: #f0f2f8; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid #d0d3de; }
+  .counter-box .c-label { font-size: 11px; color: #888; }
+  .counter-box .c-val   { font-size: 24px; font-weight: bold; color: #1976d2; }
+
+  /* 현재 작업 */
+  .progress-wrap { margin-top: 8px; }
+  .progress-bar-bg { background: #dde0ea; border-radius: 4px; height: 12px; }
+  .progress-bar-fill { height: 12px; border-radius: 4px; background: #1976d2; transition: width 0.4s; }
+  #last-msg { font-size: 12px; color: #666; margin-top: 8px; min-height: 18px; }
+
+  /* 컨트롤 */
+  .btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  button {
+    padding: 10px 6px;
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: bold;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.82; }
+  .btn-start   { background: #2e7d32; color: #fff; }
+  .btn-stop    { background: #c62828; color: #fff; }
+  .btn-pause   { background: #ef6c00; color: #fff; }
+  .btn-resume  { background: #1565c0; color: #fff; }
+  .btn-home    { background: #6a1b9a; color: #fff; }
+  .btn-policy  { background: #f0f2f8; color: #444; border: 1px solid #c0c4d0; }
+  .btn-policy.active { background: #e3f0ff; border-color: #1976d2; color: #1565c0; }
+
+  /* 로그 */
+  #log-box {
+    background: #f5f6fa;
+    border: 1px solid #d0d3de;
+    border-radius: 6px;
+    padding: 10px;
+    height: 180px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 11px;
+    color: #555;
+    grid-column: 1 / -1;
+  }
+  #log-box p { margin-bottom: 2px; border-bottom: 1px solid #e4e6ef; padding-bottom: 2px; }
+
+  .priority-display { font-size: 12px; color: #e65100; margin-top: 4px; min-height: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>♻ Recycling Robot Dashboard</h1>
+  <div>
+    <span id="conn-dot"></span>
+    <span id="conn-label">연결 중...</span>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- 시스템 상태 -->
+  <div class="card">
+    <h2>System Status</h2>
+    <div class="status-row">
+      <div class="stat-box">
+        <div class="label">State</div>
+        <div class="value" id="state">-</div>
+      </div>
+      <div class="stat-box">
+        <div class="label">Phase</div>
+        <div class="value" id="phase" style="font-size:16px;color:#7ecfff">-</div>
+      </div>
+    </div>
+    <div class="priority-display" id="priority-display"></div>
+    <div id="last-msg">-</div>
+    <div class="progress-wrap">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="prog-bar" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 컨트롤 -->
+  <div class="card">
+    <h2>Control</h2>
+    <div class="btn-grid">
+      <button class="btn-start"  onclick="sendCmd('START','sorting')">▶ Start</button>
+      <button class="btn-pause"  onclick="sendCmd('PAUSE')">⏸ Pause</button>
+      <button class="btn-resume" onclick="sendCmd('RESUME','sorting')">▷ Resume</button>
+      <button class="btn-stop"   onclick="sendCmd('STOP')">⏹ Stop</button>
+      <button class="btn-home"   onclick="sendCmd('START','standby')">⌂ Home</button>
+      <button class="btn-policy" id="btn-reset" onclick="setPolicy([])">↺ Reset</button>
+    </div>
+    <h2 style="margin-top:14px;">Priority</h2>
+    <div class="btn-grid" style="grid-template-columns: repeat(3,1fr); margin-top:6px;">
+      <button class="btn-policy" id="p-PLASTIC" onclick="togglePriority('PLASTIC')">🔵 Plastic</button>
+      <button class="btn-policy" id="p-CAN"     onclick="togglePriority('CAN')">🔴 Can</button>
+      <button class="btn-policy" id="p-PAPER"   onclick="togglePriority('PAPER')">🟢 Paper</button>
+    </div>
+    <div id="priority-order-display" style="font-size:11px;color:#888;margin-top:6px;min-height:16px;"></div>
+  </div>
+
+  <!-- 분류함 용량 -->
+  <div class="card">
+    <h2>Bin Capacity</h2>
+    <div class="bin-row">
+      <div class="bin-label"><span>Plastic</span><span id="cnt-plastic">0/20</span></div>
+      <div class="bar-bg"><div class="bar-fill bar-plastic" id="bar-plastic" style="width:0%"></div></div>
+    </div>
+    <div class="bin-row">
+      <div class="bin-label"><span>Can</span><span id="cnt-can">0/15</span></div>
+      <div class="bar-bg"><div class="bar-fill bar-can" id="bar-can" style="width:0%"></div></div>
+    </div>
+    <div class="bin-row">
+      <div class="bin-label"><span>Paper</span><span id="cnt-paper">0/25</span></div>
+      <div class="bar-bg"><div class="bar-fill bar-paper" id="bar-paper" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- 처리 통계 -->
+  <div class="card">
+    <h2>Statistics</h2>
+    <div class="counters">
+      <div class="counter-box"><div class="c-label">Total</div><div class="c-val" id="s-total">0</div></div>
+      <div class="counter-box"><div class="c-label">Plastic</div><div class="c-val" id="s-plastic">0</div></div>
+      <div class="counter-box"><div class="c-label">Can</div><div class="c-val" id="s-can">0</div></div>
+      <div class="counter-box"><div class="c-label">Paper</div><div class="c-val" id="s-paper">0</div></div>
+    </div>
+  </div>
+
+  <!-- 로그 -->
+  <div class="card" style="grid-column: 1 / -1; padding-bottom:10px;">
+    <h2>Log</h2>
+    <div id="log-box"></div>
+  </div>
+
+</div>
+
+<script>
+const BIN_CAP = { BIN_PLASTIC: 20, BIN_CAN: 15, BIN_PAPER: 25 };
+let pendingOrder = [];
+
+// ── SSE 연결 ──────────────────────────────────────────────────
+const dot   = document.getElementById('conn-dot');
+const label = document.getElementById('conn-label');
+
+function connect() {
+  const es = new EventSource('/stream');
+  es.onopen = () => {
+    dot.style.background = '#4caf50';
+    label.textContent = '연결됨';
+  };
+  es.onerror = () => {
+    dot.style.background = '#ef5350';
+    label.textContent = '연결 끊김 – 재연결 중...';
+    es.close();
+    setTimeout(connect, 2000);
+  };
+  es.onmessage = e => update(JSON.parse(e.data));
+}
+connect();
+
+// ── 상태 업데이트 ─────────────────────────────────────────────
+function update(d) {
+  // State
+  const stateEl = document.getElementById('state');
+  stateEl.textContent = d.state;
+  stateEl.className = 'value ' + d.state;
+
+  document.getElementById('phase').textContent = d.phase;
+  document.getElementById('last-msg').textContent = d.last_message;
+  document.getElementById('prog-bar').style.width = (d.progress || 0) + '%';
+
+  // priority
+  const po = d.priority_order || [];
+  document.getElementById('priority-display').textContent =
+    po.length ? 'Priority: ' + po.join(' > ') : '';
+
+  // bins
+  const bc = d.bin_counts || {};
+  setBin('plastic', bc.BIN_PLASTIC || d.plastic || 0, BIN_CAP.BIN_PLASTIC);
+  setBin('can',     bc.BIN_CAN     || d.can     || 0, BIN_CAP.BIN_CAN);
+  setBin('paper',   bc.BIN_PAPER   || d.paper   || 0, BIN_CAP.BIN_PAPER);
+
+  // stats
+  document.getElementById('s-total').textContent   = d.total;
+  document.getElementById('s-plastic').textContent = d.plastic;
+  document.getElementById('s-can').textContent     = d.can;
+  document.getElementById('s-paper').textContent   = d.paper;
+
+  // log
+  const box = document.getElementById('log-box');
+  box.innerHTML = (d.logs || []).slice().reverse()
+    .map(l => `<p>${escHtml(l)}</p>`).join('');
+}
+
+function setBin(name, cnt, cap) {
+  document.getElementById('cnt-' + name).textContent = cnt + '/' + cap;
+  document.getElementById('bar-' + name).style.width = Math.min(100, cnt / cap * 100) + '%';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── 명령 전송 ─────────────────────────────────────────────────
+function sendCmd(cmd, mode='', priority_order=[], exclude_mask=0) {
+  fetch('/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ cmd, mode, priority_order, exclude_mask, raw: `WEB:${cmd}` })
+  });
+}
+
+// ── 우선순위 토글 ─────────────────────────────────────────────
+const CATS = ['PLASTIC', 'CAN', 'PAPER'];
+
+function togglePriority(cat) {
+  const idx = pendingOrder.indexOf(cat);
+  if (idx === -1) {
+    pendingOrder.push(cat);
+  } else {
+    pendingOrder.splice(idx, 1);
+  }
+  CATS.forEach(c => {
+    const btn = document.getElementById('p-' + c);
+    const i   = pendingOrder.indexOf(c);
+    if (i !== -1) {
+      btn.classList.add('active');
+      btn.textContent = (i + 1) + ' ' + c.charAt(0) + c.slice(1).toLowerCase();
+    } else {
+      btn.classList.remove('active');
+      btn.textContent = { PLASTIC:'🔵 Plastic', CAN:'🔴 Can', PAPER:'🟢 Paper' }[c];
+    }
+  });
+  const disp = document.getElementById('priority-order-display');
+  if (pendingOrder.length) {
+    disp.textContent = '적용 순서: ' + pendingOrder.join(' > ') + ' → SET_POLICY 전송됨';
+    sendCmd('SET_POLICY', '', pendingOrder.slice());
+  } else {
+    disp.textContent = '';
+  }
+}
+
+function setPolicy(order) {
+  pendingOrder = [];
+  CATS.forEach(c => {
+    const btn = document.getElementById('p-' + c);
+    btn.classList.remove('active');
+    btn.textContent = { PLASTIC:'🔵 Plastic', CAN:'🔴 Can', PAPER:'🟢 Paper' }[c];
+  });
+  document.getElementById('priority-order-display').textContent = '';
+  sendCmd('SET_POLICY', '', []);
+}
+</script>
+</body>
+</html>

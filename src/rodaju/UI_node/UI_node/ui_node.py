@@ -19,12 +19,16 @@ ui_node.py  ─  대시보드 / 로그 / 버튼 UI 노드
   q          → 종료
 """
 
+import os
 import threading
 import time
+import json as _json
 import curses
 
 import rclpy
 from rclpy.node import Node
+from flask import Flask, Response, request, jsonify, send_from_directory
+from ament_index_python.packages import get_package_share_directory
 
 try:
     from recycle_interfaces.msg import SortCommand, SystemStatus
@@ -403,6 +407,58 @@ def run_cli(ui: UIState, node: UINode):
 #  main
 # ═══════════════════════════════════════════════════════════════
 
+def run_web_server(ui: UIState, node: UINode, host: str = "0.0.0.0", port: int = 5000):
+    try:
+        html_dir = os.path.join(get_package_share_directory("UI_node"), "resource")
+    except Exception:
+        html_dir = os.path.join(os.path.dirname(__file__), "..", "resource")
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return send_from_directory(html_dir, "dashboard.html")
+
+    @app.route("/stream")
+    def stream():
+        def event_gen():
+            while True:
+                with ui.lock:
+                    data = {
+                        "state"         : ui.state,
+                        "phase"         : ui.phase,
+                        "priority_order": ui.priority_order,
+                        "exclude_mask"  : ui.exclude_mask,
+                        "last_message"  : ui.last_message,
+                        "progress"      : ui.progress,
+                        "total"         : ui.total,
+                        "plastic"       : ui.plastic,
+                        "can"           : ui.can,
+                        "paper"         : ui.paper,
+                        "bin_counts"    : ui.bin_counts,
+                        "logs"          : ui.log_lines[-30:],
+                    }
+                yield f"data: {_json.dumps(data)}\n\n"
+                time.sleep(0.5)
+        return Response(event_gen(), mimetype="text/event-stream")
+
+    @app.route("/cmd", methods=["POST"])
+    def cmd():
+        body = request.get_json(force=True)
+        node.send_cmd(
+            cmd           = body.get("cmd", ""),
+            mode          = body.get("mode", ""),
+            priority_order= body.get("priority_order", []),
+            exclude_mask  = body.get("exclude_mask", 0),
+            raw           = body.get("raw", ""),
+        )
+        return jsonify({"ok": True})
+
+    import logging
+    log = logging.getLogger("werkzeug")
+    log.setLevel(logging.ERROR)
+    app.run(host=host, port=port, threaded=True)
+
+
 def main(args=None):
     rclpy.init(args=args)
     ui_state = UIState()
@@ -412,10 +468,16 @@ def main(args=None):
         target=lambda: rclpy.spin(ui_node), daemon=True)
     spin_thread.start()
 
+    web_thread = threading.Thread(
+        target=run_web_server, args=(ui_state, ui_node), daemon=True)
+    web_thread.start()
+
+    print("[UI] Web dashboard: http://localhost:5000")
+
     try:
-        run_tui(ui_state, ui_node)
-    except Exception:
-        run_cli(ui_state, ui_node)
+        web_thread.join()
+    except KeyboardInterrupt:
+        pass
     finally:
         ui_node.destroy_node()
         rclpy.shutdown()
