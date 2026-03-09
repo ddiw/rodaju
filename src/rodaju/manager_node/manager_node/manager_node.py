@@ -4,12 +4,11 @@ manager_node.py  ─  중앙제어 노드
 ═══════════════════════════════════════════════════════════════
 
 [시나리오 흐름]
-  PHASE 1. STANDBY        ─ 초기 대기
-  PHASE 2. BAG_PICKUP     ─ 고정 좌표로 봉투 집기 → 테이블에 붓기 (디텍션 없음)
-  PHASE 3. SWEEP          ─ 주걱으로 쓰레기 훑어 이격
-  PHASE 4. SORTING        ─ 음성/UI 명령으로 지정된 종류 순서대로 분류
-  PHASE 5. PAUSED         ─ 일시정지 (현재 동작 완료 후 대기)
-  PHASE 6. DONE           ─ 완료 후 홈 복귀
+  PHASE 1. STANDBY  ─ 초기 대기
+  PHASE 2. SWEEP    ─ 주걱으로 쓰레기 훑어 이격
+  PHASE 3. SORTING  ─ 음성/UI 명령으로 지정된 종류 순서대로 분류
+  PHASE 4. PAUSED   ─ 일시정지 (현재 동작 완료 후 대기)
+  PHASE 5. DONE     ─ 완료 후 홈 복귀
 
 [토픽 / 액션]
   구독  /recycle/command              SortCommand
@@ -30,7 +29,7 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
-from std_msgs.msg import String
+from std_msgs.msg import String, Empty
 
 try:
     from recycle_interfaces.msg    import SortCommand, SystemStatus, Detections2D, Detection2D
@@ -45,12 +44,11 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════
 
 class Phase(Enum):
-    STANDBY    = "STANDBY"
-    BAG_PICKUP = "BAG_PICKUP"
-    SWEEP      = "SWEEP"
-    SORTING    = "SORTING"
-    PAUSED     = "PAUSED"
-    DONE       = "DONE"
+    STANDBY = "STANDBY"
+    SWEEP   = "SWEEP"
+    SORTING = "SORTING"
+    PAUSED  = "PAUSED"
+    DONE    = "DONE"
 
 class SystemState(Enum):
     IDLE    = "IDLE"
@@ -63,11 +61,13 @@ LABEL_TO_BIN: dict[str, str] = {
     "pet"          : "BIN_PLASTIC",   # 500ml 생수 페트병
     "bottle"       : "BIN_PLASTIC",
     "plastic_bottle": "BIN_PLASTIC",
+    "plastic"      : "BIN_PLASTIC",
     "water_bottle" : "BIN_PLASTIC",
     "can"          : "BIN_CAN",       # 캔
     "metal"        : "BIN_CAN",
     "aluminum"     : "BIN_CAN",
     "paper_cup"    : "BIN_PAPER",     # 종이컵
+    "paper"        : "BIN_PAPER",
     "cup"          : "BIN_PAPER",
 }
 
@@ -129,18 +129,9 @@ class ManagerNode(Node):
         # ── 파라미터 ────────────────────────────────────────
         self.declare_parameter("status_rate",       2.0)
         self.declare_parameter("action_timeout",   40.0)
-        self.declare_parameter("retry_limit",          2)
-        # 쓰레기봉투 고정 좌표 (카메라 기준 3D, 단위: m)
-        self.declare_parameter("bag_x_m",  0.0)
-        self.declare_parameter("bag_y_m",  0.0)
-        self.declare_parameter("bag_z_m",  0.5)
 
         self._status_rate    = self.get_parameter("status_rate").value
         self._action_timeout = self.get_parameter("action_timeout").value
-        self._retry_limit    = self.get_parameter("retry_limit").value
-        self._bag_x_m        = self.get_parameter("bag_x_m").value
-        self._bag_y_m        = self.get_parameter("bag_y_m").value
-        self._bag_z_m        = self.get_parameter("bag_z_m").value
 
         # ── 내부 상태 ────────────────────────────────────────
         self._lock         = threading.Lock()
@@ -164,11 +155,11 @@ class ManagerNode(Node):
         # 감지 우선순위 큐
         self._det_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._det_seq   = 0
-        self._seen_ids: set[int] = set()
 
         # PAUSE/RESUME 동기화
         self._pause_event = threading.Event()
         self._pause_event.set()   # 초기 non-paused
+
 
         # ── 콜백 그룹 ────────────────────────────────────────
         self._cb_sub   = ReentrantCallbackGroup()
@@ -192,6 +183,7 @@ class ManagerNode(Node):
             self._status_pub = self.create_publisher(SystemStatus, "/recycle/response", 10)
         else:
             self._status_pub = self.create_publisher(String, "/recycle/response", 10)
+        self._vision_reset_pub = self.create_publisher(Empty, "/recycle/vision/reset", 10)
 
         # ── 액션 클라이언트 ──────────────────────────────────
         if INTERFACES_AVAILABLE:
@@ -220,21 +212,33 @@ class ManagerNode(Node):
         cmd  = msg.cmd.upper()
         mode = msg.mode.lower() if msg.mode else ""
         self.get_logger().info(
-            f"[CMD] cmd={cmd} mode={mode} priority={msg.priority} "
+            f"[CMD] cmd={cmd} mode={mode} priority_order={list(msg.priority_order)} "
             f"exclude={msg.exclude_mask:#04x} raw='{msg.raw_text}'"
         )
 
         with self._lock:
-            if cmd == "START":
-                if mode in ("sorting", ""):
-                    self._phase = Phase.BAG_PICKUP
+            if cmd == "SWEEP":
+                if self._phase == Phase.STANDBY:
+                    self._phase = Phase.SWEEP
                     self._state = SystemState.RUNNING
-                    self._last_message = "Starting scenario: bag pickup."
+                    self._last_message = "Starting sweep."
+                    self._pause_event.set()
+
+            elif cmd == "START":
+                if mode in ("sorting", ""):
+                    if msg.priority_order:
+                        self._priority_order = list(msg.priority_order)
+                    if msg.exclude_mask:
+                        self._exclude_mask = msg.exclude_mask
+                    self._phase = Phase.SORTING
+                    self._state = SystemState.RUNNING
+                    self._last_message = "Starting sorting."
+                    self._pause_event.set()
                 elif mode == "standby":
                     self._phase = Phase.STANDBY
                     self._state = SystemState.IDLE
                     self._last_message = "Returning to standby."
-                self._pause_event.set()
+                    self._pause_event.set()
 
             elif cmd == "PAUSE":
                 if self._phase not in (Phase.STANDBY, Phase.DONE, Phase.PAUSED):
@@ -272,15 +276,22 @@ class ManagerNode(Node):
     def _vision_cb(self, msg):
         """SORTING 페이즈: 쓰레기 감지 결과를 우선순위 큐에 삽입."""
         if self._phase != Phase.SORTING:
+            self.get_logger().debug(
+                f"[VISION_CB] phase={self._phase.value}, skip {len(msg.detections)} dets"
+            )
             return
 
-        # SORTING 페이즈: 쓰레기 감지 큐 삽입
-        for det in msg.detections:
-            if det.id in self._seen_ids:
-                continue
+        labels = [d.label for d in msg.detections]
+        self.get_logger().info(f"[VISION_CB] SORTING: received labels={labels}")
 
+        # SORTING 페이즈: 쓰레기 감지 큐 삽입 (vision_node가 신규 물체만 발행)
+        for det in msg.detections:
             bin_id = LABEL_TO_BIN.get(det.label.lower())
             if not bin_id:
+                self.get_logger().warn(
+                    f"[VISION_CB] label '{det.label}' not in LABEL_TO_BIN – skip. "
+                    f"Known keys: {list(LABEL_TO_BIN.keys())}"
+                )
                 continue
 
             cat = bin_id.replace("BIN_", "")
@@ -305,6 +316,7 @@ class ManagerNode(Node):
         base = len(self._priority_order)
         return base + PRIORITY_DEFAULT.get(cat, 99)
 
+
     # ═══════════════════════════════════════════════════════
     #  메인 워커 스레드 (시나리오 제어)
     # ═══════════════════════════════════════════════════════
@@ -317,9 +329,6 @@ class ManagerNode(Node):
 
             if phase == Phase.STANDBY:
                 time.sleep(0.3)
-
-            elif phase == Phase.BAG_PICKUP:
-                self._run_bag_pickup()
 
             elif phase == Phase.SWEEP:
                 self._run_sweep()
@@ -340,41 +349,7 @@ class ManagerNode(Node):
                 time.sleep(1.0)
 
     # ─────────────────────────────────────────────────────────
-    #  PHASE 2: 봉투 집어서 테이블에 붓기
-    # ─────────────────────────────────────────────────────────
-
-    def _run_bag_pickup(self):
-        self.get_logger().info("[PHASE] BAG_PICKUP")
-
-        with self._lock:
-            self._current_label    = "trash_bag"
-            self._current_bin      = "TABLE"
-            self._current_phase_fb = "BAG_PICKUP"
-            self._last_message     = (
-                f"Picking up bag at fixed coords "
-                f"({self._bag_x_m:.3f},{self._bag_y_m:.3f},{self._bag_z_m:.3f})m"
-            )
-
-        self.get_logger().info(
-            f"[BAG_PICKUP] Fixed coords: "
-            f"({self._bag_x_m:.3f},{self._bag_y_m:.3f},{self._bag_z_m:.3f})m"
-        )
-
-        success = self._send_bag_pickup()
-
-        with self._lock:
-            self._current_label    = ""
-            self._current_bin      = ""
-            self._current_phase_fb = ""
-            if success:
-                self._last_message = "Bag emptied onto table. Starting sweep."
-                self._phase        = Phase.SWEEP
-            else:
-                self._last_message = "Bag pickup failed. Back to standby."
-                self._phase        = Phase.STANDBY
-
-    # ─────────────────────────────────────────────────────────
-    #  PHASE 3: 훑기
+    #  PHASE 2: 훑기
     # ─────────────────────────────────────────────────────────
 
     def _run_sweep(self):
@@ -385,25 +360,18 @@ class ManagerNode(Node):
 
         success = self._send_exec_command("SWEEP")
 
-        # SORTING 진입 전: 이전 감지 ID / 큐 초기화 (새 봉투 내용물을 처음부터 인식)
         with self._lock:
-            self._seen_ids.clear()
-            # PriorityQueue 내부 큐 비우기
-            while not self._det_queue.empty():
-                try:
-                    self._det_queue.get_nowait()
-                except Exception:
-                    break
             self._current_phase_fb = ""
             self._last_message = (
-                "Sweep complete. Waiting for sort command."
+                "Sweep complete. Say '분류해' to start sorting."
                 if success else
-                "Sweep failed, proceeding to sort."
+                "Sweep failed. Say '분류해' to start sorting."
             )
-            self._phase = Phase.SORTING
+            self._phase = Phase.STANDBY
+        self.get_logger().info("[SWEEP] Complete. Waiting for sort command.")
 
     # ─────────────────────────────────────────────────────────
-    #  PHASE 4: 분류 (1 아이템 단위)
+    #  PHASE 3: 분류 (1 아이템 단위)
     # ─────────────────────────────────────────────────────────
 
     def _run_sorting_step(self):
@@ -411,9 +379,27 @@ class ManagerNode(Node):
         if not self._pause_event.is_set():
             return
 
+        # 매 스텝: J_WORK로 이동 → 큐 비우기 → 비전 5초 스캔 → 감지 기다리기
+        self.get_logger().info("[SORT] Moving to J_WORK for vision scan...")
+        self._send_exec_command("GOTO_WORK")
+
+        # 이전 스캔 결과 버리기
+        while not self._det_queue.empty():
+            try:
+                self._det_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        self._vision_reset_pub.publish(Empty())
+        self.get_logger().info("[SORT] Vision scan started (1s). Waiting for detections...")
+
+        # 스캔 완료될 때까지 대기 (1초 + 여유 1초)
         try:
-            prio, seq, det = self._det_queue.get(timeout=1.0)
+            prio, seq, det = self._det_queue.get(timeout=2.0)
         except queue.Empty:
+            self.get_logger().info("[SORT] No objects detected. Sorting complete.")
+            with self._lock:
+                self._phase = Phase.DONE
             return
 
         bin_id = LABEL_TO_BIN.get(det.label.lower())
@@ -433,7 +419,6 @@ class ManagerNode(Node):
             self._last_message     = f"Sorting: {det.label} → {bin_id}"
 
         success = self._send_pick_place(det, bin_id)
-        self._seen_ids.add(det.id)
 
         with self._lock:
             cat = bin_id.replace("BIN_", "").lower()
@@ -450,8 +435,7 @@ class ManagerNode(Node):
                     f"{full_warn}"
                 )
             else:
-                self._last_message = f"Failed: {det.label}. Will retry next cycle."
-                self._seen_ids.discard(det.id)   # 실패 시 재시도 허용
+                self._last_message = f"Failed: {det.label}."
 
             self._current_label    = ""
             self._current_bin      = ""
@@ -462,7 +446,7 @@ class ManagerNode(Node):
     #  액션 클라이언트
     # ═══════════════════════════════════════════════════════
 
-    def _send_pick_place(self, det, bin_id: str, retry: int = 0) -> bool:
+    def _send_pick_place(self, det, bin_id: str) -> bool:
         if self._action_client is None:
             self.get_logger().warn("[ACTION] No client (sim: success)")
             time.sleep(2.0)
@@ -492,28 +476,20 @@ class ManagerNode(Node):
 
         gh = send_fut.result()
         if not gh.accepted:
-            if retry < self._retry_limit:
-                time.sleep(1.0)
-                return self._send_pick_place(det, bin_id, retry + 1)
             return False
 
         res_fut = gh.get_result_async()
         if not self._wait_future(res_fut):
-            if retry < self._retry_limit:
-                return self._send_pick_place(det, bin_id, retry + 1)
             return False
 
         result = res_fut.result().result
         self.get_logger().info(
             f"[ACTION] success={result.success} msg='{result.message}'"
         )
-        if not result.success and retry < self._retry_limit:
-            time.sleep(0.5)
-            return self._send_pick_place(det, bin_id, retry + 1)
         return result.success
 
     def _send_exec_command(self, cmd: str) -> bool:
-        """BAG_PICKUP / SWEEP / HOME 특수 명령."""
+        """SWEEP / HOME 특수 명령."""
         if self._action_client is None:
             self.get_logger().info(f"[EXEC] {cmd} (sim: success)")
             time.sleep(3.0)
@@ -554,47 +530,6 @@ class ManagerNode(Node):
         with self._lock:
             self._current_phase_fb = fb.phase
             self._current_progress = fb.progress
-
-    def _send_bag_pickup(self) -> bool:
-        """고정 좌표로 봉투 집기 액션 전송. exec_node 는 label="BAG_PICKUP" 으로 분기 처리."""
-        if self._action_client is None:
-            self.get_logger().info("[BAG_PICKUP] sim: success")
-            time.sleep(3.0)
-            return True
-
-        if not self._action_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error("[BAG_PICKUP] Action server not available.")
-            return False
-
-        goal              = PickPlace.Goal()
-        goal.label        = "BAG_PICKUP"
-        goal.bin_id       = "BAG_PICKUP"
-        goal.detection_id = -1
-        goal.has_3d       = True
-        goal.pick_x_m     = float(self._bag_x_m)
-        goal.pick_y_m     = float(self._bag_y_m)
-        goal.pick_z_m     = float(self._bag_z_m)
-
-        send_fut = self._action_client.send_goal_async(
-            goal, feedback_callback=self._feedback_cb)
-        if not self._wait_future(send_fut):
-            return False
-
-        gh = send_fut.result()
-        if not gh.accepted:
-            self.get_logger().warn("[BAG_PICKUP] Goal rejected.")
-            return False
-
-        res_fut = gh.get_result_async()
-        if not self._wait_future(res_fut):
-            self.get_logger().error("[BAG_PICKUP] Result timeout.")
-            return False
-
-        result = res_fut.result().result
-        self.get_logger().info(
-            f"[BAG_PICKUP] success={result.success} msg='{result.message}'"
-        )
-        return result.success
 
     # ═══════════════════════════════════════════════════════
     #  상태 발행

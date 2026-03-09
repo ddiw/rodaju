@@ -12,7 +12,7 @@ import numpy as np
 PACKAGE_NAME = "vision_node"
 PACKAGE_PATH = get_package_share_directory(PACKAGE_NAME)
 
-YOLO_MODEL_FILENAME = "best_v5.pt"
+YOLO_MODEL_FILENAME = "best_v6.pt"
 YOLO_MODEL_PATH = os.path.join(PACKAGE_PATH, "resource", YOLO_MODEL_FILENAME)
 
 

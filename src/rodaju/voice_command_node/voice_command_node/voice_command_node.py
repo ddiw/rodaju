@@ -3,11 +3,11 @@
 voice_command_node.py  ─  음성인식 분석 노드
 ═══════════════════════════════════════════════════════════════
 
-[처리 흐름]  get_keyword.py 예제 기반
+[처리 흐름]
   마이크 상시 청취
     → WakeupWord("hello rokey") 감지
-    → OpenAI Whisper API로 STT (stt.py 방식)
-    → GPT-4o LLM으로 명령어 파싱 (get_keyword.py 방식)
+    → OpenAI Whisper API로 STT
+    → GPT-4o LLM으로 명령어 파싱
     → SortCommand 토픽 발행 (/recycle/command)
 
 [인식 명령 예시]
@@ -18,9 +18,6 @@ voice_command_node.py  ─  음성인식 분석 노드
   "플라스틱 먼저 분류해"          → SET_POLICY priority=PLASTIC
   "캔이랑 종이만 분류해"          → SET_POLICY exclude=PLASTIC+TRASH
   "다 주워"                      → SET_POLICY exclude=0
-
-[환경변수]
-  OPENAI_API_KEY  ─ .env 파일 또는 환경변수로 설정
 """
 
 import os
@@ -63,10 +60,10 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  패키지 경로 & API 키 로드  (get_keyword.py 방식 동일)
+#  패키지 경로 & API 키 로드
 # ═══════════════════════════════════════════════════════════════
 
-PACKAGE_NAME = "voice_command_node"   # 실제 패키지명으로 수정
+PACKAGE_NAME = "voice_command_node"
 
 try:
     package_path = get_package_share_directory(PACKAGE_NAME)
@@ -82,12 +79,10 @@ WAKEUP_MODEL_PATH     = os.path.join(package_path, "resource", WAKEUP_MODEL_FILE
 
 
 # ═══════════════════════════════════════════════════════════════
-#  STT  (stt.py 와 동일한 구조)
+#  STT
 # ═══════════════════════════════════════════════════════════════
 
 class STT:
-    """OpenAI Whisper API 기반 STT. stt.py 와 동일."""
-
     def __init__(self, openai_api_key: str, duration: int = 5, samplerate: int = 16000):
         self.client     = OpenAI(api_key=openai_api_key)
         self.duration   = duration      # 녹음 시간 (초)
@@ -121,11 +116,11 @@ class STT:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  WakeupWord  (wakeup_word.py 와 동일한 구조)
+#  WakeupWord
 # ═══════════════════════════════════════════════════════════════
 
 class WakeupWord:
-    """openwakeword 기반 웨이크업 감지. wakeup_word.py 와 동일."""
+    """openwakeword 기반 웨이크업 감지."""
 
     def __init__(self, buffer_size: int, model_path: str = WAKEUP_MODEL_PATH):
         self.model_name  = os.path.basename(model_path).split(".", maxsplit=1)[0]
@@ -155,7 +150,7 @@ class WakeupWord:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  LLM 명령어 파서  (get_keyword.py 의 extract_keyword 확장)
+#  LLM 명령어 파서
 # ═══════════════════════════════════════════════════════════════
 
 # 프롬프트: 분류로봇 명령어 파싱 전용
@@ -165,12 +160,14 @@ _PROMPT = """
 다른 설명이나 마크다운 없이 JSON만 출력하세요.
 
 <명령어 종류>
-- START   : 분류 작업 시작 (봉투 집기부터)
-- STOP    : 완전 정지
-- PAUSE   : 일시정지
-- RESUME  : 재개
-- STANDBY : 홈 위치로 복귀 / 대기
-- SET_POLICY : 분류 정책 변경 (우선순위, 대상 변경)
+- SWEEP      : 테이블 훑기 (스윕, 청소, 훑어줘 등)
+- START      : 분류 시작. 우선순위/제외 지정과 함께 분류를 시작하는 경우에도 사용.
+               (분류해, 분류 시작, 캔부터 분류해줘, 플라스틱 먼저 분류해줘 등)
+- STOP       : 완전 정지
+- PAUSE      : 일시정지
+- RESUME     : 재개
+- STANDBY    : 홈 위치로 복귀 / 대기
+- SET_POLICY : 현재 작업 중 정책만 변경 (로봇이 이미 분류 중일 때)
 
 <분류 카테고리>
 - PLASTIC : 페트병, 생수병, 플라스틱병
@@ -187,17 +184,29 @@ _PROMPT = """
 }}
 
 <예시>
+입력: "스윕해"
+출력: {{"cmd":"SWEEP","mode":"","priority_order":[],"exclude":[],"raw_text":"스윕해"}}
+
+입력: "훑어줘"
+출력: {{"cmd":"SWEEP","mode":"","priority_order":[],"exclude":[],"raw_text":"훑어줘"}}
+
+입력: "분류해"
+출력: {{"cmd":"START","mode":"sorting","priority_order":[],"exclude":[],"raw_text":"분류해"}}
+
 입력: "분류 시작해"
 출력: {{"cmd":"START","mode":"sorting","priority_order":[],"exclude":[],"raw_text":"분류 시작해"}}
 
+입력: "캔부터 분류해줘"
+출력: {{"cmd":"START","mode":"sorting","priority_order":["CAN"],"exclude":[],"raw_text":"캔부터 분류해줘"}}
+
 입력: "페트병 먼저 분류해줘"
-출력: {{"cmd":"SET_POLICY","mode":"","priority_order":["PLASTIC"],"exclude":[],"raw_text":"페트병 먼저 분류해줘"}}
+출력: {{"cmd":"START","mode":"sorting","priority_order":["PLASTIC"],"exclude":[],"raw_text":"페트병 먼저 분류해줘"}}
 
 입력: "플라스틱 캔 순서대로 분류해줘"
-출력: {{"cmd":"SET_POLICY","mode":"","priority_order":["PLASTIC","CAN"],"exclude":[],"raw_text":"플라스틱 캔 순서대로 분류해줘"}}
+출력: {{"cmd":"START","mode":"sorting","priority_order":["PLASTIC","CAN"],"exclude":[],"raw_text":"플라스틱 캔 순서대로 분류해줘"}}
 
 입력: "캔이랑 종이컵만 분류해"
-출력: {{"cmd":"SET_POLICY","mode":"","priority_order":[],"exclude":["PLASTIC"],"raw_text":"캔이랑 종이컵만 분류해"}}
+출력: {{"cmd":"START","mode":"sorting","priority_order":[],"exclude":["PLASTIC"],"raw_text":"캔이랑 종이컵만 분류해"}}
 
 입력: "잠깐 멈춰"
 출력: {{"cmd":"PAUSE","mode":"","priority_order":[],"exclude":[],"raw_text":"잠깐 멈춰"}}
@@ -216,7 +225,7 @@ EXCLUDE_BITS = {"PLASTIC": 1, "CAN": 2, "PAPER": 4}
 
 
 class LLMCommandParser:
-    """GPT-4o 기반 명령어 파서. get_keyword.py 의 lang_chain 구조 동일."""
+    """GPT-4o 기반 명령어 파서."""
 
     def __init__(self, openai_api_key: str):
         self.llm = ChatOpenAI(
@@ -233,7 +242,6 @@ class LLMCommandParser:
     def parse(self, text: str) -> dict | None:
         """
         STT 텍스트 → SortCommand 필드 딕셔너리.
-        get_keyword.py extract_keyword() 와 동일한 방식으로 LLM 호출.
         파싱 실패 시 None 반환.
         """
         import json
@@ -242,7 +250,7 @@ class LLMCommandParser:
             raw      = response.content.strip()
             print(f"[LLM] 응답: {raw}")
 
-            # 마크다운 코드블록 제거 (```json ... ``` 형태 대응)
+            # 마크다운 코드블록 제거
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
@@ -310,14 +318,14 @@ class VoiceCommandNode(Node):
         if not OPENAI_API_KEY:
             self.get_logger().error("OPENAI_API_KEY not set! Check .env or environment.")
 
-        # ── STT 초기화 (stt.py 방식) ─────────────────────────
+        # ── STT 초기화 ─────────────────────────
         self._stt = STT(
             openai_api_key=OPENAI_API_KEY,
             duration=stt_dur,
             samplerate=stt_rate,
         )
 
-        # ── LLM 파서 초기화 (get_keyword.py 방식) ────────────
+        # ── LLM 파서 초기화 ────────────
         self._parser = LLMCommandParser(openai_api_key=OPENAI_API_KEY)
 
         # ── MicController + WakeupWord 초기화 ────────────────
@@ -349,7 +357,6 @@ class VoiceCommandNode(Node):
     # ═══════════════════════════════════════════════════════
 
     def _init_mic_and_wakeup(self, mic_rate, mic_chunk, mic_dev):
-        """get_keyword.py __init__ 의 MicController 설정과 동일."""
         if not MIC_CONTROLLER_AVAILABLE:
             self.get_logger().warn("MicController not available – wakeup disabled.")
             self._use_wakeup = False
@@ -386,7 +393,6 @@ class VoiceCommandNode(Node):
 
     def _listen_loop(self):
         """
-        get_keyword.py get_keyword() 루프와 동일한 흐름:
           1. 마이크 스트림 열기
           2. WakeupWord 감지 대기
           3. STT → LLM 파싱 → 발행
@@ -397,7 +403,7 @@ class VoiceCommandNode(Node):
         while self._running and rclpy.ok():
             try:
                 if self._use_wakeup and self._mic_controller is not None:
-                    # ── 웨이크업 모드 (get_keyword.py 동일 흐름) ──
+                    # ── 웨이크업 모드 ──
                     self.get_logger().info("[Voice] 마이크 스트림 오픈...")
                     self._mic_controller.open_stream()
                     self._wakeup.set_stream(self._mic_controller.stream)
@@ -418,7 +424,7 @@ class VoiceCommandNode(Node):
                     except EOFError:
                         import time; time.sleep(2.0)
 
-                # ── STT (stt.py 방식) ─────────────────────────
+                # ── STT ─────────────────────────
                 text = self._stt.speech2text()
                 if not text:
                     self.get_logger().debug("[Voice] STT 결과 없음.")

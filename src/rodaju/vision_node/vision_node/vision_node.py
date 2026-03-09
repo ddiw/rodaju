@@ -28,6 +28,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import Empty
 from cv_bridge import CvBridge
 
 try:
@@ -43,33 +44,6 @@ try:
 except Exception as _yolo_err:
     print(f"[WARN] YoloModel import failed: {_yolo_err}")  # 디버깅
     YOLO_AVAILABLE = False
-
-
-# ═══════════════════════════════════════════════════════════════
-#  레이블 매핑
-# ═══════════════════════════════════════════════════════════════
-
-# YOLO 클래스 → 분류 레이블 정규화
-LABEL_NORM: dict[str, str] = {
-    # 500ml 생수 페트병
-    # "plastic"       : "pet",
-    # "plastic_bottle": "pet",
-    # "bottle"        : "pet",
-    # "pet_bottle"    : "pet",
-    # "water_bottle"  : "pet",
-    # # 캔
-    # "can"           : "can",
-    # "tin_can"       : "can",
-    # "aluminum_can"  : "can",
-    # "metal"         : "can",
-    # # 종이컵
-    # "paper"         : "paper_cup",
-    # "paper_cup"     : "paper_cup",
-    # "cup"           : "paper_cup",
-}
-
-# 봉투 레이블 (필터링용 - 디텍션에서 제외)
-_BAG_LABELS = {"trash_bag", "bag", "plastic_bag"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -99,6 +73,14 @@ class VisionNode(Node):
         self._intrinsics  = None
         self._det_id_cnt  = 0
 
+        # 중복 발행 방지: 이미 발행한 물체 위치 추적
+        # key = (label, cx // _BUCKET, cy // _BUCKET)
+        self._BUCKET     = 50          # 픽셀 버킷 크기 (같은 물체 중복 방지)
+        self._published: set[tuple] = set()
+
+        # one-shot 스캔 모드: reset 신호를 받으면 N프레임만 스캔 후 정지
+        self._scan_frames_remaining = 0
+
         # ── YOLO ────────────────────────────────────────────
         if YOLO_AVAILABLE:
             self._yolo = YoloModel()
@@ -115,6 +97,8 @@ class VisionNode(Node):
             self._depth_cb, qos)
         self.create_subscription(CameraInfo, "/camera/camera/color/camera_info",
             self._info_cb, qos)
+        self.create_subscription(Empty, "/recycle/vision/reset",
+            self._reset_cb, 10)
 
         # ── 발행 ────────────────────────────────────────────
         if INTERFACES_AVAILABLE:
@@ -137,6 +121,12 @@ class VisionNode(Node):
     def _depth_cb(self, msg):
         self._depth_frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
 
+    def _reset_cb(self, _msg):
+        """sweep 완료 후 manager_node가 발행하는 리셋 신호: one-shot 스캔 활성화."""
+        self._published.clear()
+        self._scan_frames_remaining = 10  # 10Hz 기준 1초간 스캔
+        self.get_logger().info("[VISION] One-shot scan activated (10 frames / 1s).")
+
     def _info_cb(self, msg: CameraInfo):
         if self._intrinsics is None:
             self._intrinsics = {
@@ -154,17 +144,32 @@ class VisionNode(Node):
         if self._color_frame is None:
             return
 
+        # one-shot 모드: reset 신호 없이는 스캔 안 함
+        if self._scan_frames_remaining <= 0:
+            return
+        self._scan_frames_remaining -= 1
+        self.get_logger().info(
+            f"[VISION] Scanning... ({self._scan_frames_remaining} frames left)"
+        )
+
         raws = self._run_yolo(self._color_frame)
         dets = []
 
-        for raw in raws:
-            # 쓰레기봉투는 고정 좌표 사용 → 디텍션에서 제외
-            if raw["label"] in _BAG_LABELS:
-                continue
+        # 현재 프레임의 버킷 키 집합 (사라진 물체 제거용)
+        current_keys: set[tuple] = set()
 
+        for raw in raws:
+            key = (raw["label"], raw["cx"] // self._BUCKET, raw["cy"] // self._BUCKET)
+            current_keys.add(key)
+            if key in self._published:
+                continue          # 이미 발행한 물체 → 스킵
             det = self._build_detection(raw)
             if det:
                 dets.append(det)
+                self._published.add(key)
+
+        # 이번 프레임에서 사라진 물체는 추적 목록에서 제거
+        self._published &= current_keys
 
         # 바운딩박스 시각화
         vis = self._color_frame.copy()
@@ -188,6 +193,10 @@ class VisionNode(Node):
         # 감지 결과가 없으면 발행하지 않음
         # (빈 메시지가 manager_node 큐에 노이즈로 쌓이는 것 방지)
         if not dets:
+            if raws:
+                self.get_logger().debug(
+                    f"[VISION] {len(raws)} raw dets skipped (already published)"
+                )
             return
 
         try:
@@ -231,7 +240,7 @@ class VisionNode(Node):
                         continue
                     x1, y1, x2, y2 = [int(v) for v in box]
                     raw_label = res.names[int(cls)]
-                    label     = LABEL_NORM.get(raw_label.lower(), raw_label.lower())
+                    label     = raw_label
                     # OBB: 4개 꼭짓점 + 회전 각도(rad→deg) 저장
                     points    = None
                     angle_deg = 0.0
@@ -271,7 +280,11 @@ class VisionNode(Node):
             det.w, det.h   = raw["w"], raw["h"]
             det.cx, det.cy = raw["cx"], raw["cy"]
 
-            x_m, y_m, z_m = self._pixel_to_3d(raw["cx"], raw["cy"])
+            if raw.get("points") is not None:
+                x_m, y_m, z_m = self._obb_to_3d(raw["points"])
+            else:
+                x_m, y_m, z_m = self._pixel_to_3d(raw["cx"], raw["cy"])
+
             det.has_3d = z_m > 0.01
             det.x_m, det.y_m, det.z_m = float(x_m), float(y_m), float(z_m)
             det.angle_deg = float(raw.get("angle_deg", 0.0))
@@ -281,7 +294,70 @@ class VisionNode(Node):
             return None
 
     # ═══════════════════════════════════════════════════════
-    #  2D → 3D 변환 (ROI 평균 depth)
+    #  2D → 3D 변환 (OBB 내 포인트 기반 그립 포인트 계산)
+    # ═══════════════════════════════════════════════════════
+
+    def _obb_to_3d(self, points_px):
+        """OBB 내 depth 포인트 전체 → 물체 두께 정중앙으로 그립 포인트 계산.
+
+        - top_z   : OBB 내 포인트 상위 15%(카메라에 가장 가까운) 중앙값
+        - bottom_z: OBB 내 포인트 하위 15%(카메라에서 가장 먼) 중앙값
+        - grasp_z = (top_z + bottom_z) / 2
+        - grasp_xy: top 포인트들의 XY 중앙값
+        """
+        if self._depth_frame is None or self._intrinsics is None:
+            return 0.0, 0.0, 0.0
+        try:
+            import numpy as np
+            import cv2
+
+            h, w     = self._depth_frame.shape[:2]
+            fx, fy   = self._intrinsics["fx"],  self._intrinsics["fy"]
+            ppx, ppy = self._intrinsics["ppx"], self._intrinsics["ppy"]
+
+            # OBB 폴리곤 마스크 생성
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(mask, [points_px], 255)
+
+            # 마스크 내 유효 depth 픽셀 추출
+            ys, xs = np.where((mask > 0) & (self._depth_frame > 0))
+            if len(xs) < 10:
+                return 0.0, 0.0, 0.0
+
+            depths = self._depth_frame[ys, xs].astype(float) * self._depth_scl
+            valid  = depths > 0.01
+            xs, ys, depths = xs[valid], ys[valid], depths[valid]
+            if len(xs) < 10:
+                return 0.0, 0.0, 0.0
+
+            # 오름차순 정렬 (작을수록 카메라에 가까움)
+            sort_idx = np.argsort(depths)
+            n15      = max(1, int(len(sort_idx) * 0.15))
+
+            top_idx    = sort_idx[:n15]   # 카메라에 가장 가까운 15%
+            bottom_idx = sort_idx[-n15:]  # 카메라에서 가장 먼 15%
+
+            top_z    = float(np.median(depths[top_idx]))
+            bottom_z = float(np.median(depths[bottom_idx]))
+            grasp_z  = (top_z + bottom_z) / 2.0
+
+            # grasp_xy: top 포인트들의 픽셀 XY 중앙값 → 3D 변환
+            cx_px = float(np.median(xs[top_idx]))
+            cy_px = float(np.median(ys[top_idx]))
+            x_m   = (cx_px - ppx) * grasp_z / fx
+            y_m   = (cy_px - ppy) * grasp_z / fy
+
+            self.get_logger().debug(
+                f"[OBB3D] top_z={top_z:.3f} bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
+            )
+            return x_m, y_m, grasp_z
+
+        except Exception as e:
+            self.get_logger().warn(f"OBB 3D error: {e}")
+            return 0.0, 0.0, 0.0
+
+    # ═══════════════════════════════════════════════════════
+    #  2D → 3D 변환 (ROI 평균 depth, OBB 없을 때 fallback)
     # ═══════════════════════════════════════════════════════
 
     def _pixel_to_3d(self, cx: int, cy: int):

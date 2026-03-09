@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+        'manager = manager_node.manager_node:main',
         ],
     },
 )
