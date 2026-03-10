@@ -160,7 +160,7 @@ _PROMPT = """
 다른 설명이나 마크다운 없이 JSON만 출력하세요.
 
 <명령어 종류>
-- SWEEP      : 테이블 훑기 (스윕, 청소, 훑어줘 등)
+- SWEEP      : 테이블 훑기 (스윕, 청소, 훑어줘, 모아, 모아줘, 쓰레기 모아, 쓰레기 모아줘 등)
 - START      : 분류 시작. 우선순위/제외 지정과 함께 분류를 시작하는 경우에도 사용.
                (분류해, 분류 시작, 캔부터 분류해줘, 플라스틱 먼저 분류해줘 등)
 - STOP       : 완전 정지
@@ -189,6 +189,12 @@ _PROMPT = """
 
 입력: "훑어줘"
 출력: {{"cmd":"SWEEP","mode":"","priority_order":[],"exclude":[],"raw_text":"훑어줘"}}
+
+입력: "쓰레기 모아"
+출력: {{"cmd":"SWEEP","mode":"","priority_order":[],"exclude":[],"raw_text":"쓰레기 모아"}}
+
+입력: "쓰레기 모아줘"
+출력: {{"cmd":"SWEEP","mode":"","priority_order":[],"exclude":[],"raw_text":"쓰레기 모아줘"}}
 
 입력: "분류해"
 출력: {{"cmd":"START","mode":"sorting","priority_order":[],"exclude":[],"raw_text":"분류해"}}

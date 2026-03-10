@@ -68,19 +68,27 @@ J_WORK = [-11.0, 26.0, 19.0, 0.0, 133.0, -12.0]
 TABLE_CENTER_POS = [500.0, 0.0, 90.0, 180.0, 0.0, 90.0]
 
 
-# 훑기 파라미터
-SWEEP_Z        = 120.0     # 테이블 표면 높이 (mm)
-SWEEP_RANGE_X  = 250.0    # 좌우 훑기 범위 (mm)
-SWEEP_RANGE_Y  = 180.0    # 앞뒤 훑기 범위 (mm)
-SWEEP_STEP_Y   = 60.0     # Y 스텝 간격 (mm)
+# 모으기 동작 파라미터
+GATHER_LIFT_Z = 200.0   # 이동 시 들어올리는 높이 오프셋 (mm)
+
+# (시작 위치, 끝 위치) 쌍 – z=133.8이 접촉 높이
+GATHER_STEPS = [
+    ([838.8, -180.0, 133.8,   0.0, 150.0,   0.0], [638.8, -180.0, 133.8,   0.0, 150.0,   0.0]),
+    ([838.8,    0.0, 133.8,   0.0, 150.0,   0.0], [638.8,    0.0, 133.8,   0.0, 150.0,   0.0]),
+    ([838.8,  170.0, 133.8,   0.0, 150.0,   0.0], [638.8,  170.0, 133.8,   0.0, 150.0,   0.0]),
+    ([331.6, -180.0, 133.8, 180.0, 160.0, 180.0], [431.6, -180.0, 133.8, 180.0, 160.0, 180.0]),
+    ([331.6,    0.0, 133.8, 180.0, 160.0, 180.0], [431.6,    0.0, 133.8, 180.0, 160.0, 180.0]),
+    ([331.6,  170.0, 133.8, 180.0, 160.0, 180.0], [431.6,  170.0, 133.8, 180.0, 160.0, 180.0]),
+]
 
 # 빗자루 거치대 위치 (로봇 베이스 좌표계) – 실제 값으로 교체 필요
-BROOM_HOLDER_POS    = [150.0, -300.0, 120.0, 0.0, -180.0, 0.0]
+BROOM_HOLDER_POS    = [416.0, 280.0, 160.0, 180.0, 180.0, 90.0]
 BROOM_APPROACH_Z    = 150.0   # 거치대 위 접근 높이 오프셋 (mm)
 
 # pick & place
 APPROACH_Z_OFFSET = 80.0
 PICK_Z_OFFSET     = -30.0
+MAX_GRASP_RETRIES = 3
 
 # J_HOME에서 movel로 도달 가능한 안전 경유점 (singularity 방지용)
 # PICK_PLACE 로그에서 이 위치는 J_HOME → movel로 정상 도달 확인됨
@@ -102,7 +110,7 @@ BIN_POSITIONS: dict[str, list] = {
 GRIPPER_PARAMS: dict[str, dict] = {
     "BIN_PLASTIC": {"force": 300, "width": 1000},   # 페트병 (부드럽게)
     "BIN_CAN"    : {"force": 350, "width": 1000},   # 캔 (단단하게)
-    "BIN_PAPER"  : {"force":  80, "width": 1000},   # 종이컵 (매우 부드럽게)
+    "BIN_PAPER"  : {"force": 200, "width": 1000},   # 종이컵 (매우 부드럽게)
     "DEFAULT"    : {"force": 200, "width": 1000},
 }
 
@@ -264,17 +272,17 @@ class M0609ExecNode(Node):
         return result
 
     # ══════════════════════════════════════════════════════
-    #  동작 1: 주걱 훑기 (쓰레기 이격)
+    #  동작 1: 주걱 훑기
     # ══════════════════════════════════════════════════════
 
     def _do_sweep(self, fb) -> bool:
         """
         1. 거치대에서 빗자루 파지
-        2. 작업 영역 진입 후 테이블 훑기
+        2. GATHER_STEPS 순서대로 쓰레기 모으기
         3. 거치대에 빗자루 반납 → 홈
         """
         fb("SWEEP_START", 5.0)
-        self.get_logger().info("[SWEEP] Starting sweep sequence.")
+        self.get_logger().info("[SWEEP] Starting gather sequence.")
 
         broom_above = list(BROOM_HOLDER_POS)
         broom_above[2] += BROOM_APPROACH_Z
@@ -289,55 +297,41 @@ class M0609ExecNode(Node):
         self.gripper.close(force=GRIPPER_PARAMS["DEFAULT"]["force"])
         self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
         self.robot.mwait()
+        self.robot.movej(J_WORK, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
 
-        # J_WORK 자세각을 그대로 사용 – 하드코딩 orientation으로 movel 하면
-        # arm configuration mismatch로 DSR이 거부함
-        ori = self.robot.get_posx()[3:]
+        # 2. 모으기 동작
+        n = len(GATHER_STEPS)
+        for i, (start, end) in enumerate(GATHER_STEPS):
+            start_above = list(start); start_above[2] += GATHER_LIFT_Z
+            end_above   = list(end);   end_above[2]   += GATHER_LIFT_Z
 
-        cx, cy = TABLE_CENTER_POS[0], TABLE_CENTER_POS[1]
-        n_steps = int(SWEEP_RANGE_Y / SWEEP_STEP_Y) + 1
-
-        for i, step in enumerate(range(n_steps)):
-            y_pos = cy - SWEEP_RANGE_Y / 2 + step * SWEEP_STEP_Y
-
-            # 해당 Y 줄 접근 (위에서)
-            above = [cx - SWEEP_RANGE_X / 2, y_pos, SWEEP_Z + 50.0] + ori
-            self.robot.movel(above, vel=VELOCITY)
+            # 시작 위치 위로 이동 → 내려서 접촉 → 밀기 → 들어올리기
+            self.robot.movel(start_above, vel=VELOCITY, acc=ACC)
+            self.robot.mwait()
+            self.robot.movel(start, vel=VELOCITY_SLOW, acc=ACC)
+            self.robot.mwait()
+            self.robot.movel(end, vel=VELOCITY_SLOW, acc=ACC)
+            self.robot.mwait()
+            self.robot.movel(end_above, vel=VELOCITY, acc=ACC)
             self.robot.mwait()
 
-            # 왼쪽 시작점 내려오기
-            start = [cx - SWEEP_RANGE_X / 2, y_pos, SWEEP_Z] + ori
-            self.robot.movel(start, vel=VELOCITY_SLOW)
-            self.robot.mwait()
-
-            # → 오른쪽 끝으로 밀기
-            end = [cx + SWEEP_RANGE_X / 2, y_pos, SWEEP_Z] + ori
-            self.robot.movel(end, vel=VELOCITY_SLOW)
-            self.robot.mwait()
-
-            # 들어올리기
-            above_end = [cx + SWEEP_RANGE_X / 2, y_pos, SWEEP_Z + 50.0] + ori
-            self.robot.movel(above_end, vel=VELOCITY)
-            self.robot.mwait()
-
-            progress = 15.0 + 70.0 * ((i + 1) / n_steps)
-            fb("SWEEPING", progress)
+            progress = 15.0 + 70.0 * ((i + 1) / n)
+            fb("GATHERING", progress)
 
         # 3. 거치대에 빗자루 반납
         fb("BROOM_RETURN", 90.0)
-        self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.movel(broom_above, vel=VELOCITY, acc=ACC)
         self.robot.mwait()
-        self.robot.movel(BROOM_HOLDER_POS, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.movel(BROOM_HOLDER_POS, vel=VELOCITY, acc=ACC)
         self.robot.mwait()
         self.gripper.open()
-        self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.movel(broom_above, vel=VELOCITY, acc=ACC)
         self.robot.mwait()
 
-        # sweep 후 J_WORK로 이동 (카메라가 테이블 전체를 볼 수 있는 위치)
-        self.robot.movej(J_WORK, vel=VELOCITY)
-        self.robot.mwait()
+        self._go_home()
         fb("DONE", 100.0)
-        self.get_logger().info("[SWEEP] Complete. Robot at J_WORK for vision scan.")
+        self.get_logger().info("[SWEEP] Gather complete.")
         return True
 
     # ══════════════════════════════════════════════════════
@@ -386,15 +380,39 @@ class M0609ExecNode(Node):
         self.robot.movel(approach)
         self.robot.mwait()
 
-        # 2. GRASP
-        fb("GRASP", 30.0)
-        self.robot.movel(pick_pos, vel=VELOCITY_SLOW)
-        self.robot.mwait()
-        self.gripper.close(force=gp["force"])
+        # 2. GRASP (파지 실패 시 재시도)
+        gripped = False
+        for attempt in range(1, MAX_GRASP_RETRIES + 1):
+            fb("GRASP", 30.0)
+            self.robot.movel(pick_pos, vel=VELOCITY_SLOW)
+            self.robot.mwait()
+            self.gripper.close(force=gp["force"])
+
+            if self.gripper.is_gripping():
+                gripped = True
+                break
+
+            self.get_logger().warn(
+                f"[GRASP] attempt {attempt}/{MAX_GRASP_RETRIES} – no object detected, retrying."
+            )
+            # 다시 접근 위치로 올라가서 재시도
+            self.robot.movel(approach, vel=VELOCITY_SLOW)
+            self.robot.mwait()
+            self.gripper.move(width=gp["width"], force=gp["force"])
+
+        if not gripped:
+            self.get_logger().error("[GRASP] Failed to grasp after all retries.")
+            self.robot.movel(approach)
+            self.robot.mwait()
+            return False
 
         # 3. LIFT
         fb("LIFT", 50.0)
         self.robot.movel(approach)
+        self.robot.mwait()
+
+        fb("MOVE_HOME", 60.0)
+        self.robot.movej(J_HOME)
         self.robot.mwait()
 
         # 4. MOVE_BIN (LIFT 위치에서 bin_above로 직접 이동 – J_HOME 경유 시 singularity 발생)
@@ -488,11 +506,9 @@ class M0609ExecNode(Node):
     #  공통
     # ══════════════════════════════════════════════════════
 
-    def _go_home(self, open_gripper: bool = True):
+    def _go_home(self):
         self.robot.movej(J_HOME, vel=VELOCITY, acc=ACC)
         self.robot.mwait()
-        if open_gripper:
-            self.gripper.open()
 
     def _transit_to_work(self):
         """J_HOME 이후 작업 영역 진입 – movej로 singularity 없이 이동."""
