@@ -187,6 +187,10 @@ class VisionNode(Node):
                 x, y = x1, y1
             cv2.putText(vis, label_text, (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # 그립 포인트 표시 (빨간 점)
+            if raw.get("grasp_px"):
+                cv2.circle(vis, raw["grasp_px"], 8, (0, 0, 255), -1)
+                cv2.circle(vis, raw["grasp_px"], 10, (255, 255, 255), 2)
         cv2.imshow("vision_node", vis)
         cv2.waitKey(1)
 
@@ -281,7 +285,8 @@ class VisionNode(Node):
             det.cx, det.cy = raw["cx"], raw["cy"]
 
             if raw.get("points") is not None:
-                x_m, y_m, z_m = self._obb_to_3d(raw["points"])
+                x_m, y_m, z_m, gx, gy = self._obb_to_3d(raw["points"])
+                raw["grasp_px"] = (int(gx), int(gy))
             else:
                 x_m, y_m, z_m = self._pixel_to_3d(raw["cx"], raw["cy"])
 
@@ -298,18 +303,22 @@ class VisionNode(Node):
     # ═══════════════════════════════════════════════════════
 
     def _obb_to_3d(self, points_px):
-        """OBB 내 depth 포인트 전체 → 물체 두께 정중앙으로 그립 포인트 계산.
+        """OBB 장축 슬라이싱 → 각 슬라이스 최고점의 중간점으로 그립 포인트 계산.
 
-        - top_z   : OBB 내 포인트 상위 15%(카메라에 가장 가까운) 중앙값
-        - bottom_z: OBB 내 포인트 하위 15%(카메라에서 가장 먼) 중앙값
-        - grasp_z = (top_z + bottom_z) / 2
-        - grasp_xy: top 포인트들의 XY 중앙값
+        1. OBB 장축 방향으로 N_SLICES 등분
+        2. 각 슬라이스에서 depth 최솟값(카메라에 가장 가까운 = 물체 최상단) 픽셀 추출
+        3. 그 픽셀들의 픽셀 XY 중앙값 → grasp_xy  (물체 장축 중심)
+        4. grasp_z = (top_z + bottom_z) / 2  (물체 높이 중간)
+
+        Returns: (x_m, y_m, grasp_z, cx_px, cy_px)
         """
         if self._depth_frame is None or self._intrinsics is None:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
         try:
             import numpy as np
             import cv2
+
+            N_SLICES = 12
 
             h, w     = self._depth_frame.shape[:2]
             fx, fy   = self._intrinsics["fx"],  self._intrinsics["fy"]
@@ -321,40 +330,71 @@ class VisionNode(Node):
 
             # 마스크 내 유효 depth 픽셀 추출
             ys, xs = np.where((mask > 0) & (self._depth_frame > 0))
-            if len(xs) < 10:
-                return 0.0, 0.0, 0.0
+            if len(xs) < N_SLICES:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
 
             depths = self._depth_frame[ys, xs].astype(float) * self._depth_scl
             valid  = depths > 0.01
             xs, ys, depths = xs[valid], ys[valid], depths[valid]
-            if len(xs) < 10:
-                return 0.0, 0.0, 0.0
+            if len(xs) < N_SLICES:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
 
-            # 오름차순 정렬 (작을수록 카메라에 가까움)
-            sort_idx = np.argsort(depths)
-            n15      = max(1, int(len(sort_idx) * 0.15))
+            # ── OBB 장축 방향 계산 ──────────────────────────────
+            # points_px: OBB 4꼭짓점 (4,2) int32
+            pts = points_px.astype(float)
+            # 장축: 가장 긴 변의 방향벡터
+            d0 = pts[1] - pts[0]
+            d1 = pts[2] - pts[1]
+            long_axis = d0 if np.linalg.norm(d0) >= np.linalg.norm(d1) else d1
+            long_axis = long_axis / np.linalg.norm(long_axis)   # 단위벡터
 
-            top_idx    = sort_idx[:n15]   # 카메라에 가장 가까운 15%
-            bottom_idx = sort_idx[-n15:]  # 카메라에서 가장 먼 15%
+            # OBB 중심
+            cx_obb = float(np.mean(pts[:, 0]))
+            cy_obb = float(np.mean(pts[:, 1]))
 
-            top_z    = float(np.median(depths[top_idx]))
-            bottom_z = float(np.median(depths[bottom_idx]))
+            # 각 픽셀을 장축에 투영
+            pts_arr   = np.stack([xs, ys], axis=1).astype(float)
+            centered  = pts_arr - np.array([cx_obb, cy_obb])
+            proj      = centered @ long_axis          # 장축 방향 스칼라
+
+            # N_SLICES 등분 → 각 슬라이스에서 depth 최솟값 픽셀
+            proj_min, proj_max = proj.min(), proj.max()
+            edges = np.linspace(proj_min, proj_max, N_SLICES + 1)
+
+            top_xs, top_ys, top_depths = [], [], []
+            for k in range(N_SLICES):
+                in_slice = (proj >= edges[k]) & (proj < edges[k + 1])
+                if not np.any(in_slice):
+                    continue
+                slice_depths = depths[in_slice]
+                best         = np.argmin(slice_depths)           # 최소 depth = 최고점
+                top_xs.append(xs[in_slice][best])
+                top_ys.append(ys[in_slice][best])
+                top_depths.append(slice_depths[best])
+
+            if len(top_depths) < 2:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
+
+            top_depths = np.array(top_depths)
+            top_z    = float(np.median(top_depths))
+            bottom_z = float(np.median(depths[np.argsort(depths)[-max(1, int(len(depths) * 0.15)):]]))
             grasp_z  = (top_z + bottom_z) / 2.0
 
-            # grasp_xy: top 포인트들의 픽셀 XY 중앙값 → 3D 변환
-            cx_px = float(np.median(xs[top_idx]))
-            cy_px = float(np.median(ys[top_idx]))
+            # grasp_xy: 슬라이스별 최고점들의 픽셀 중앙값
+            cx_px = float(np.median(top_xs))
+            cy_px = float(np.median(top_ys))
             x_m   = (cx_px - ppx) * grasp_z / fx
             y_m   = (cy_px - ppy) * grasp_z / fy
 
             self.get_logger().debug(
-                f"[OBB3D] top_z={top_z:.3f} bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
+                f"[OBB3D] slices={len(top_depths)} top_z={top_z:.3f} "
+                f"bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
             )
-            return x_m, y_m, grasp_z
+            return x_m, y_m, grasp_z, cx_px, cy_px
 
         except Exception as e:
             self.get_logger().warn(f"OBB 3D error: {e}")
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
 
     # ═══════════════════════════════════════════════════════
     #  2D → 3D 변환 (ROI 평균 depth, OBB 없을 때 fallback)
