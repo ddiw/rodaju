@@ -339,17 +339,18 @@ class VisionNode(Node):
 
             top_z    = float(np.median(depths[top_idx]))
             bottom_z = float(np.median(depths[bottom_idx]))
+            grasp_z  = (top_z + bottom_z) / 2.0
 
             # grasp_xy: top 포인트들의 픽셀 XY 중앙값 → 3D 변환
             cx_px = float(np.median(xs[top_idx]))
             cy_px = float(np.median(ys[top_idx]))
-            x_m   = (cx_px - ppx) * top_z / fx
-            y_m   = (cy_px - ppy) * top_z / fy
+            x_m   = (cx_px - ppx) * grasp_z / fx
+            y_m   = (cy_px - ppy) * grasp_z / fy
 
             self.get_logger().debug(
-                f"[OBB3D] top_z={top_z:.3f} bottom_z={bottom_z:.3f} (grasp=top)"
+                f"[OBB3D] top_z={top_z:.3f} bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
             )
-            return x_m, y_m, top_z
+            return x_m, y_m, grasp_z
 
         except Exception as e:
             self.get_logger().warn(f"OBB 3D error: {e}")

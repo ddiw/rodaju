@@ -16,7 +16,6 @@ m0609_exec_node.py  ─  로봇 동작 수행 노드
 
 import os
 import time
-import threading
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -82,22 +81,13 @@ GATHER_STEPS = [
 ]
 
 # 빗자루 거치대 위치 (로봇 베이스 좌표계) – 실제 값으로 교체 필요
-BROOM_HOLDER_POS    = [416.0, 280.0, 160.0, 180.0, 180.0, 90.0]
+BROOM_HOLDER_POS    = [416.0, 285.0, 160.0, 180.0, 180.0, 90.0]
 BROOM_APPROACH_Z    = 150.0   # 거치대 위 접근 높이 오프셋 (mm)
 
 # pick & place
 APPROACH_Z_OFFSET = 80.0
 PICK_Z_OFFSET     = -30.0
 MAX_GRASP_RETRIES = 3
-
-# J_HOME에서 movel로 도달 가능한 안전 경유점 (singularity 방지용)
-# PICK_PLACE 로그에서 이 위치는 J_HOME → movel로 정상 도달 확인됨
-WORK_APPROACH_POS = [
-    TABLE_CENTER_POS[0],
-    TABLE_CENTER_POS[1],
-    TABLE_CENTER_POS[2] + APPROACH_Z_OFFSET,
-    180.0, 0.0, 90.0,
-]
 
 # 분류함 위치 (로봇 베이스 좌표계)
 BIN_POSITIONS: dict[str, list] = {
@@ -180,7 +170,6 @@ class M0609ExecNode(Node):
         self.robot   = RobotAPI()
         self.gripper = GripperAPI()
         self._busy   = False
-        self._lock   = threading.Lock()
 
         try:
             self._T_gripper2cam = np.load(T_GRIPPER2CAM_PATH)
@@ -303,15 +292,17 @@ class M0609ExecNode(Node):
         # 2. 모으기 동작
         n = len(GATHER_STEPS)
         for i, (start, end) in enumerate(GATHER_STEPS):
-            start_above = list(start); start_above[2] += GATHER_LIFT_Z
-            end_above   = list(end);   end_above[2]   += GATHER_LIFT_Z
+            start_above = list(start)
+            start_above[2] += GATHER_LIFT_Z
+            end_above = list(end)
+            end_above[2] += GATHER_LIFT_Z
 
             # 시작 위치 위로 이동 → 내려서 접촉 → 밀기 → 들어올리기
             self.robot.movel(start_above, vel=VELOCITY, acc=ACC)
             self.robot.mwait()
-            self.robot.movel(start, vel=VELOCITY_SLOW, acc=ACC)
+            self.robot.movel(start, vel=VELOCITY, acc=ACC)
             self.robot.mwait()
-            self.robot.movel(end, vel=VELOCITY_SLOW, acc=ACC)
+            self.robot.movel(end, vel=VELOCITY, acc=ACC)
             self.robot.mwait()
             self.robot.movel(end_above, vel=VELOCITY, acc=ACC)
             self.robot.mwait()
@@ -321,9 +312,11 @@ class M0609ExecNode(Node):
 
         # 3. 거치대에 빗자루 반납
         fb("BROOM_RETURN", 90.0)
-        self.robot.movel(broom_above, vel=VELOCITY, acc=ACC)
+        self.robot.movej(J_WORK, vel=VELOCITY, acc=ACC)
         self.robot.mwait()
-        self.robot.movel(BROOM_HOLDER_POS, vel=VELOCITY, acc=ACC)
+        self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+        self.robot.movel(BROOM_HOLDER_POS, vel=VELOCITY_SLOW, acc=ACC)
         self.robot.mwait()
         self.gripper.open()
         self.robot.movel(broom_above, vel=VELOCITY, acc=ACC)
