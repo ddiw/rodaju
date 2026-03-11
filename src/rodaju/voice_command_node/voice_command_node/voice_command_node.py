@@ -45,6 +45,9 @@ except ImportError:
     from std_msgs.msg import String
     INTERFACES_AVAILABLE = False
 
+# 대시보드 로그 브릿지용 (항상 import)
+from std_msgs.msg import String as _StrMsg
+
 try:
     from openwakeword.model import Model as WakeupModel
     from scipy.signal import resample
@@ -347,6 +350,9 @@ class VoiceCommandNode(Node):
         else:
             self._pub = self.create_publisher(String, "/recycle/command", 10)
 
+        # ── 대시보드 로그 브릿지 발행자 ─────────────────────
+        self._log_pub = self.create_publisher(_StrMsg, "/recycle/voice/log", 10)
+
         # ── 청취 스레드 ──────────────────────────────────────
         self._running = True
         self._thread  = threading.Thread(target=self._listen_loop, daemon=True)
@@ -422,6 +428,7 @@ class VoiceCommandNode(Node):
                         break
 
                     self.get_logger().info("[Voice] 웨이크업 감지! STT 시작.")
+                    self._pub_log("웨이크업 감지")
 
                 else:
                     # ── 웨이크업 없이 바로 STT (keyboard fallback) ──
@@ -431,12 +438,14 @@ class VoiceCommandNode(Node):
                         import time; time.sleep(2.0)
 
                 # ── STT ─────────────────────────
+                self._pub_log("STT 시작")
                 text = self._stt.speech2text()
                 if not text:
                     self.get_logger().debug("[Voice] STT 결과 없음.")
                     continue
 
                 self.get_logger().info(f"[STT] '{text}'")
+                self._pub_log(f"[STT] '{text}'")
 
                 # ── LLM 파싱 (get_keyword.py extract_keyword 방식) ──
                 parsed = self._parser.parse(text)
@@ -473,12 +482,25 @@ class VoiceCommandNode(Node):
                 f"priority_order={list(msg.priority_order)} exclude={msg.exclude_mask:#04x} "
                 f"raw='{msg.raw_text}'"
             )
+            self._pub_log(
+                f"[CMD 발행] cmd={msg.cmd} mode={msg.mode} raw='{msg.raw_text}'"
+            )
+            self._pub_log("웨이크업 단어 대기 중")
         except Exception as e:
             self.get_logger().error(f"[Voice] 발행 오류: {e}")
 
     def destroy_node(self):
         self._running = False
         super().destroy_node()
+
+    def _pub_log(self, text: str):
+        """대시보드 모달 트리거용 로그 토픽 발행"""
+        try:
+            msg = _StrMsg()
+            msg.data = text
+            self._log_pub.publish(msg)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════

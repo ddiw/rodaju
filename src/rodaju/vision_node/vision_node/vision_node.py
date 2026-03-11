@@ -27,7 +27,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from std_msgs.msg import Empty
 from cv_bridge import CvBridge
 
@@ -105,6 +105,10 @@ class VisionNode(Node):
             self._pub = self.create_publisher(Detections2D, "/recycle/vision/detections", 10)
         else:
             self._pub = self.create_publisher(String, "/recycle/vision/detections", 10)
+
+        # ── 시각화 프리뷰 발행 (dashboard MJPEG 용) ─────────
+        self._preview_pub = self.create_publisher(
+            CompressedImage, "/recycle/vision/preview", 1)
 
         # ── 타이머 ──────────────────────────────────────────
         self.create_timer(1.0 / self._rate, self._detect_and_publish)
@@ -193,6 +197,19 @@ class VisionNode(Node):
                 cv2.circle(vis, raw["grasp_px"], 10, (255, 255, 255), 2)
         cv2.imshow("vision_node", vis)
         cv2.waitKey(1)
+
+        # ── 시각화 프레임 → ROS CompressedImage 발행 ────────
+        try:
+            import cv2 as _cv2
+            ok, buf = _cv2.imencode(".jpg", vis, [_cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ok:
+                cmsg = CompressedImage()
+                cmsg.header.stamp = self.get_clock().now().to_msg()
+                cmsg.format = "jpeg"
+                cmsg.data   = buf.tobytes()
+                self._preview_pub.publish(cmsg)
+        except Exception as _e:
+            self.get_logger().debug(f"Preview publish error: {_e}")
 
         # 감지 결과가 없으면 발행하지 않음
         # (빈 메시지가 manager_node 큐에 노이즈로 쌓이는 것 방지)
