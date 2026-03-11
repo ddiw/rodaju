@@ -72,12 +72,19 @@ GATHER_LIFT_Z = 200.0   # 이동 시 들어올리는 높이 오프셋 (mm)
 
 # (시작 위치, 끝 위치) 쌍 – z=133.8이 접촉 높이
 GATHER_STEPS = [
-    ([838.8, -180.0, 133.8,   0.0, 150.0,   0.0], [638.8, -180.0, 133.8,   0.0, 150.0,   0.0]),
-    ([838.8,    0.0, 133.8,   0.0, 150.0,   0.0], [638.8,    0.0, 133.8,   0.0, 150.0,   0.0]),
-    ([838.8,  170.0, 133.8,   0.0, 150.0,   0.0], [638.8,  170.0, 133.8,   0.0, 150.0,   0.0]),
-    ([331.6, -180.0, 133.8, 180.0, 160.0, 180.0], [431.6, -180.0, 133.8, 180.0, 160.0, 180.0]),
-    ([331.6,    0.0, 133.8, 180.0, 160.0, 180.0], [431.6,    0.0, 133.8, 180.0, 160.0, 180.0]),
-    ([331.6,  170.0, 133.8, 180.0, 160.0, 180.0], [431.6,  170.0, 133.8, 180.0, 160.0, 180.0]),
+    ([838.8, -180.0, 123.8,   0.0, 150.0,   0.0], [638.8, -180.0, 123.8,   0.0, 150.0,   0.0]),
+    ([838.8,    0.0, 123.8,   0.0, 150.0,   0.0], [638.8,    0.0, 123.8,   0.0, 150.0,   0.0]),
+    ([838.8,  170.0, 123.8,   0.0, 150.0,   0.0], [638.8,  170.0, 123.8,   0.0, 150.0,   0.0]),
+    ([331.6, -180.0, 123.8, 180.0, 160.0, 180.0], [431.6, -180.0, 123.8, 180.0, 160.0, 180.0]),
+    ([331.6,    0.0, 123.8, 180.0, 160.0, 180.0], [431.6,    0.0, 123.8, 180.0, 160.0, 180.0]),
+    ([331.6,  170.0, 123.8, 180.0, 160.0, 180.0], [431.6,  170.0, 123.8, 180.0, 160.0, 180.0]),
+]
+
+# 테이블 끝으로 쓸어내기 – 왼쪽(331.6) → 오른쪽(838.8) 방향
+CLEAN_STEPS = [
+    ([331.6,  170.0, 123.8, 180.0, 160.0, 180.0], [858.8,  170.0, 123.8,   0.0, 150.0,   0.0]),
+    ([331.6,    0.0, 123.8, 180.0, 160.0, 180.0], [858.8,    0.0, 123.8,   0.0, 150.0,   0.0]),
+    ([331.6, -180.0, 123.8, 180.0, 160.0, 180.0], [858.8, -180.0, 123.8,   0.0, 150.0,   0.0]),
 ]
 
 # 빗자루 거치대 위치 (로봇 베이스 좌표계) – 실제 값으로 교체 필요
@@ -86,7 +93,7 @@ BROOM_APPROACH_Z    = 150.0   # 거치대 위 접근 높이 오프셋 (mm)
 
 # pick & place
 APPROACH_Z_OFFSET = 80.0
-PICK_Z_OFFSET     = -30.0
+PICK_Z_OFFSET     = -40.0
 MAX_GRASP_RETRIES = 3
 
 # 분류함 위치 (로봇 베이스 좌표계)
@@ -146,6 +153,13 @@ class GripperAPI:
         return bool(self._g.get_status()[1])
 
     def _wait(self, timeout=5.0):
+        # 1단계: busy=1 (동작 시작) 대기 (최대 0.5초)
+        t = time.time()
+        while time.time() - t < 0.5:
+            if self._g.get_status()[0]:
+                break
+            time.sleep(0.05)
+        # 2단계: busy=0 (동작 완료) 대기
         t = time.time()
         while time.time() - t < timeout:
             if not self._g.get_status()[0]:
@@ -227,9 +241,11 @@ class M0609ExecNode(Node):
 
         try:
             # ── 특수 명령 분기 ──────────────────────────────
-            if goal.label in ("SWEEP", "HOME", "GOTO_WORK"):
+            if goal.label in ("SWEEP", "HOME", "GOTO_WORK", "CLEAN_DESK"):
                 if goal.label == "SWEEP":
                     success = self._do_sweep(fb)
+                elif goal.label == "CLEAN_DESK":
+                    self._clean_desk(); success = True
                 elif goal.label == "GOTO_WORK":
                     self.robot.movej(J_WORK, vel=VELOCITY)
                     self.robot.mwait()
@@ -326,6 +342,48 @@ class M0609ExecNode(Node):
         fb("DONE", 100.0)
         self.get_logger().info("[SWEEP] Gather complete.")
         return True
+    
+    def _clean_desk(self):
+        """남은 쓰레기를 테이블 한쪽 끝(x=838.8)으로 쓸어내기."""
+        self.get_logger().info("[CLEAN] Starting clean desk.")
+
+        broom_above = list(BROOM_HOLDER_POS)
+        broom_above[2] += BROOM_APPROACH_Z
+
+        # 1. 거치대 접근 → 파지
+        self.gripper.open()
+        self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+        self.robot.movel(BROOM_HOLDER_POS, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+        self.gripper.close(force=GRIPPER_PARAMS["DEFAULT"]["force"])
+        self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+        self.robot.movej(J_WORK, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+
+        # 2. 테이블 끝으로 쓸어내기 (170 → 0 → -180 순서)
+        for start, end in CLEAN_STEPS:
+            start_above = list(start); start_above[2] += GATHER_LIFT_Z
+            end_above   = list(end);   end_above[2]   += GATHER_LIFT_Z
+
+            self.robot.movel(start_above, vel=VELOCITY, acc=ACC); self.robot.mwait()
+            self.robot.movel(start,       vel=VELOCITY, acc=ACC); self.robot.mwait()
+            self.robot.movel(end,         vel=VELOCITY, acc=ACC); self.robot.mwait()
+            self.robot.movel(end_above,   vel=VELOCITY, acc=ACC); self.robot.mwait()
+
+        # 3. 거치대에 빗자루 반납
+        self.robot.movej(J_WORK, vel=VELOCITY, acc=ACC)
+        self.robot.mwait()
+        self.robot.movel(broom_above, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+        self.robot.movel(BROOM_HOLDER_POS, vel=VELOCITY_SLOW, acc=ACC)
+        self.robot.mwait()
+        self.gripper.open()
+        self.robot.movel(broom_above, vel=VELOCITY, acc=ACC)
+        self.robot.mwait()
+
+        self.get_logger().info("[CLEAN] Clean desk complete.")
 
     # ══════════════════════════════════════════════════════
     #  동작 3: Pick & Place
@@ -346,10 +404,8 @@ class M0609ExecNode(Node):
         else:
             target = self._pixel_estimate(goal.pick_cx, goal.pick_cy)
 
-        # OBB 각도로 그리퍼 RZ 설정
-        # pick_angle_deg: 카메라 이미지 평면에서 객체 장축 방향 (°)
-        # gripper_angle_offset: 카메라 마운팅 보정값 (파라미터로 조정)
-        pick_rz = target[5] + goal.pick_angle_deg + self._gripper_angle_offset
+        # 수직 하강 자세 고정 + OBB 각도로 그리퍼 RZ 설정
+        pick_rz   = goal.pick_angle_deg + self._gripper_angle_offset
         target[5] = pick_rz % 360.0
         self.get_logger().info(
             f"[PICK] label={goal.label} obb_angle={goal.pick_angle_deg:.1f}° "

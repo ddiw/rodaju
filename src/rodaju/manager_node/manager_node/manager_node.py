@@ -341,6 +341,7 @@ class ManagerNode(Node):
                 self._pause_event.wait()
 
             elif phase == Phase.DONE:
+                self._send_exec_command("CLEAN_DESK")
                 self._send_exec_command("HOME")
                 with self._lock:
                     self._state        = SystemState.STOPPED

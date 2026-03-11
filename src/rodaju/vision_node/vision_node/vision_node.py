@@ -379,7 +379,8 @@ class VisionNode(Node):
                 return 0.0, 0.0, 0.0, 0.0, 0.0
 
             top_depths = np.array(top_depths)
-            best_slice = int(np.argmin(top_depths))              # 가장 높은 슬라이스 인덱스
+            RANK = min(2, len(top_depths) - 1)                   # 3번째(인덱스 2), 슬라이스 수 부족 시 최대
+            best_slice = int(np.argsort(top_depths)[RANK])       # depth 오름차순 RANK번째 슬라이스
             top_z    = float(top_depths[best_slice])
             bottom_z = float(np.median(depths[np.argsort(depths)[-max(1, int(len(depths) * 0.15)):]]))
             grasp_z  = (top_z + bottom_z) / 2.0
