@@ -362,6 +362,7 @@ class VisionNode(Node):
             edges = np.linspace(proj_min, proj_max, N_SLICES + 1)
 
             top_xs, top_ys, top_depths = [], [], []
+            slice_all_xs, slice_all_ys = [], []
             for k in range(N_SLICES):
                 in_slice = (proj >= edges[k]) & (proj < edges[k + 1])
                 if not np.any(in_slice):
@@ -371,18 +372,21 @@ class VisionNode(Node):
                 top_xs.append(xs[in_slice][best])
                 top_ys.append(ys[in_slice][best])
                 top_depths.append(slice_depths[best])
+                slice_all_xs.append(xs[in_slice])
+                slice_all_ys.append(ys[in_slice])
 
             if len(top_depths) < 2:
                 return 0.0, 0.0, 0.0, 0.0, 0.0
 
             top_depths = np.array(top_depths)
-            top_z    = float(np.median(top_depths))
+            best_slice = int(np.argmin(top_depths))              # 가장 높은 슬라이스 인덱스
+            top_z    = float(top_depths[best_slice])
             bottom_z = float(np.median(depths[np.argsort(depths)[-max(1, int(len(depths) * 0.15)):]]))
             grasp_z  = (top_z + bottom_z) / 2.0
 
-            # grasp_xy: 슬라이스별 최고점들의 픽셀 중앙값
-            cx_px = float(np.median(top_xs))
-            cy_px = float(np.median(top_ys))
+            # grasp_xy: 가장 높은 슬라이스 내 픽셀들의 중앙값
+            cx_px = float(np.median(slice_all_xs[best_slice]))
+            cy_px = float(np.median(slice_all_ys[best_slice]))
             x_m   = (cx_px - ppx) * grasp_z / fx
             y_m   = (cy_px - ppy) * grasp_z / fy
 
