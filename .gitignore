@@ -30,3 +30,8 @@ Thumbs.db
 *.png
 
 *.txt
+*.cache
+*.pt
+*.yaml
+events.*
+*.csv

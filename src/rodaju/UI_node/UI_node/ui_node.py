@@ -21,6 +21,15 @@ except ImportError:
     from std_msgs.msg import String
     INTERFACES_AVAILABLE = False
 
+try:
+    from sensor_msgs.msg import CompressedImage as _CompressedImage
+    SENSOR_MSGS_AVAILABLE = True
+except ImportError:
+    SENSOR_MSGS_AVAILABLE = False
+
+# 대시보드 모달용 voice 로그 수신
+from std_msgs.msg import String as _StrMsg
+
 
 # ═══════════════════════════════════════════════════════════════
 #  공유 상태
@@ -53,6 +62,10 @@ class UIState:
 
         self.log_lines: list[str] = []
         self.lock = threading.Lock()
+
+        # YOLO 프리뷰 최신 JPEG 바이트 (MJPEG 스트림용)
+        self.latest_preview: bytes = b""
+        self.preview_lock = threading.Lock()
 
     def update(self, msg):
         with self.lock:
@@ -112,12 +125,27 @@ class UINode(Node):
                 lambda m: self._ui.add_log(m.data), 10)
             self._cmd_pub = self.create_publisher(String, "/recycle/ui/command", 10)
 
+        # YOLO 프리뷰 구독
+        if SENSOR_MSGS_AVAILABLE:
+            self.create_subscription(
+                _CompressedImage, "/recycle/vision/preview",
+                self._preview_cb, 1)
+
+        # voice_command_node 로그 → 대시보드 모달 트리거
+        self.create_subscription(
+            _StrMsg, "/recycle/voice/log",
+            lambda msg: self._ui.add_log(msg.data), 10)
+
     def _status_cb(self, msg):
         self._ui.update(msg)
         self._ui.add_log(
             f"[STATUS] {msg.state} | {msg.mode} | "
             f"total={msg.processed_total} | {msg.last_message[:60]}"
         )
+
+    def _preview_cb(self, msg):
+        with self._ui.preview_lock:
+            self._ui.latest_preview = bytes(msg.data)
 
     def send_cmd(self, cmd: str, mode: str = "", priority_order: list = None,
                  exclude_mask: int = 0, raw: str = ""):
@@ -184,6 +212,32 @@ def run_web_server(ui: UIState, node: UINode, host: str = "0.0.0.0", port: int =
             raw           = body.get("raw", ""),
         )
         return jsonify({"ok": True})
+
+    @app.route("/video_feed")
+    def video_feed():
+        """MJPEG 스트림: YOLO 시각화 프리뷰"""
+        _BOUNDARY = b"--frame\r\n"
+        _NO_FRAME = (
+            b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"  # 빈 프레임 → 클라이언트는 이전 이미지 유지
+        )
+
+        def mjpeg_gen():
+            while True:
+                with ui.preview_lock:
+                    frame = ui.latest_preview
+                if frame:
+                    yield (
+                        _BOUNDARY
+                        + b"Content-Type: image/jpeg\r\n\r\n"
+                        + frame
+                        + b"\r\n"
+                    )
+                time.sleep(0.05)   # ~20 fps
+
+        return Response(
+            mjpeg_gen(),
+            mimetype="multipart/x-mixed-replace; boundary=frame",
+        )
 
     import logging
     log = logging.getLogger("werkzeug")

@@ -27,7 +27,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from std_msgs.msg import Empty
 from cv_bridge import CvBridge
 
@@ -106,6 +106,10 @@ class VisionNode(Node):
         else:
             self._pub = self.create_publisher(String, "/recycle/vision/detections", 10)
 
+        # ── 시각화 프리뷰 발행 (dashboard MJPEG 용) ─────────
+        self._preview_pub = self.create_publisher(
+            CompressedImage, "/recycle/vision/preview", 1)
+
         # ── 타이머 ──────────────────────────────────────────
         self.create_timer(1.0 / self._rate, self._detect_and_publish)
 
@@ -153,6 +157,8 @@ class VisionNode(Node):
         )
 
         raws = self._run_yolo(self._color_frame)
+        # OpenCV ROI 검증 필터 (화이트리스트 + 클래스별 물리 특성 확인)
+        raws = self._filter_raws(raws)
         dets = []
 
         # 현재 프레임의 버킷 키 집합 (사라진 물체 제거용)
@@ -187,8 +193,25 @@ class VisionNode(Node):
                 x, y = x1, y1
             cv2.putText(vis, label_text, (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # 그립 포인트 표시 (빨간 점)
+            if raw.get("grasp_px"):
+                cv2.circle(vis, raw["grasp_px"], 8, (0, 0, 255), -1)
+                cv2.circle(vis, raw["grasp_px"], 10, (255, 255, 255), 2)
         cv2.imshow("vision_node", vis)
         cv2.waitKey(1)
+
+        # ── 시각화 프레임 → ROS CompressedImage 발행 ────────
+        try:
+            import cv2 as _cv2
+            ok, buf = _cv2.imencode(".jpg", vis, [_cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ok:
+                cmsg = CompressedImage()
+                cmsg.header.stamp = self.get_clock().now().to_msg()
+                cmsg.format = "jpeg"
+                cmsg.data   = buf.tobytes()
+                self._preview_pub.publish(cmsg)
+        except Exception as _e:
+            self.get_logger().debug(f"Preview publish error: {_e}")
 
         # 감지 결과가 없으면 발행하지 않음
         # (빈 메시지가 manager_node 큐에 노이즈로 쌓이는 것 방지)
@@ -213,6 +236,179 @@ class VisionNode(Node):
             s      = Str()
             s.data = str([f"{d.label}@({d.cx},{d.cy})" for d in dets])
             self._pub.publish(s)
+
+    # ═══════════════════════════════════════════════════════
+    #  빛 반사 제거 유틸리티
+    # ═══════════════════════════════════════════════════════
+
+    def _get_specular_mask(self, frame=None):
+        """HSV 기반 정반사 픽셀 마스크.  V>220 AND S<40 → 정반사로 판정.
+        반환: uint8 H×W (0 or 255)
+        """
+        import cv2
+        import numpy as np
+        src = frame if frame is not None else self._color_frame
+        if src is None:
+            return None
+        hsv  = cv2.cvtColor(src, cv2.COLOR_BGR2HSV).astype(np.float32)
+        mask = ((hsv[:, :, 2] > 220) & (hsv[:, :, 1] < 40)).astype(np.uint8) * 255
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        return cv2.dilate(mask, kernel, iterations=1)
+
+    # ═══════════════════════════════════════════════════════
+    #  OpenCV ROI 검증 필터
+    # ═══════════════════════════════════════════════════════
+
+    # ── 클래스 화이트리스트 ─────────────────────────────────
+    _ALLOWED_LABELS = {"bottle", "can", "cup"}
+
+    # ── 클래스별 임계값 (조명 환경에 따라 여기서만 조정) ────
+    _ROI_VALIDATE = {
+        # 투명 플라스틱 병
+        #   투명 재질  → 채도(S) 낮음
+        #   세로로 긴  → 종횡비 > 1.8
+        #   병 테두리  → Canny 엣지 밀도 존재
+        "bottle": {
+            "s_mean_max"      : 55,    # HSV S 평균 상한
+            "aspect_min"      : 1.8,   # OBB 장단축 비율 하한
+            "edge_density_min": 0.04,  # Canny 엣지 픽셀 비율 하한
+        },
+        # 찌그러진 캔
+        #   금속 표면  → 정반사 픽셀 반드시 존재
+        #   라벨+금속  → S채널 분산 큼
+        #   세로로 긴  → 종횡비 > 1.5
+        "can": {
+            "specular_ratio_min": 0.008,  # 정반사 픽셀 비율 하한
+            "s_std_min"         : 18,     # HSV S 표준편차 하한
+            "aspect_min"        : 1.5,    # OBB 장단축 비율 하한
+        },
+        # 종이컵
+        #   흰색/밝음  → V 높음
+        #   무광 표면  → S 낮음
+        #   형태 유연  → 종횡비 0.5~3.0 (눕혀질 수 있음)
+        "cup": {
+            "v_mean_min" : 140,   # HSV V 평균 하한
+            "s_mean_max" : 70,    # HSV S 평균 상한
+            "aspect_min" : 0.5,   # OBB 장단축 비율 하한
+            "aspect_max" : 3.0,   # OBB 장단축 비율 상한
+        },
+    }
+
+    def _validate_detection_roi(self, raw: dict) -> bool:
+        """YOLO 검출 영역을 OpenCV 특성 분석으로 2차 검증.
+
+        흐름
+        ────
+        1. bbox/OBB 영역을 ROI 마스크로 추출
+        2. HSV 통계(S 평균·분산, V 평균) + 종횡비 + 엣지 밀도 계산
+        3. 클래스별 조건 미충족 → False (드롭)
+
+        반환: True=유효 / False=드롭
+        """
+        import cv2
+        import numpy as np
+
+        label = raw.get("label", "")
+        if label not in self._ROI_VALIDATE:
+            return True   # 알 수 없는 클래스는 통과
+
+        params = self._ROI_VALIDATE[label]
+        frame  = self._color_frame
+        if frame is None:
+            return True
+
+        # ── ROI 마스크 ──────────────────────────────────────
+        h, w = frame.shape[:2]
+        if raw.get("points") is not None:
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(mask, [raw["points"]], 255)
+        else:
+            x1 = max(0, raw["x"]);            y1 = max(0, raw["y"])
+            x2 = min(w, raw["x"] + raw["w"]); y2 = min(h, raw["y"] + raw["h"])
+            mask = np.zeros((h, w), dtype=np.uint8)
+            mask[y1:y2, x1:x2] = 255
+
+        roi_pixels = int(np.count_nonzero(mask))
+        if roi_pixels < 200:
+            return True   # ROI 너무 작으면 검증 스킵
+
+        # ── HSV 통계 ────────────────────────────────────────
+        hsv   = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+        s_ch  = hsv[:, :, 1][mask > 0]
+        v_ch  = hsv[:, :, 2][mask > 0]
+        s_mean = float(np.mean(s_ch))
+        s_std  = float(np.std(s_ch))
+        v_mean = float(np.mean(v_ch))
+
+        # ── OBB 종횡비 ──────────────────────────────────────
+        if raw.get("points") is not None:
+            pts    = raw["points"].astype(float)
+            d0     = np.linalg.norm(pts[1] - pts[0])
+            d1     = np.linalg.norm(pts[2] - pts[1])
+            aspect = max(d0, d1) / (min(d0, d1) + 1e-6)
+        else:
+            aspect = max(raw["w"], raw["h"]) / (min(raw["w"], raw["h"]) + 1e-6)
+
+        # ── 클래스별 검증 ───────────────────────────────────
+        reasons = []
+
+        if label == "bottle":
+            if s_mean > params["s_mean_max"]:
+                reasons.append(f"S_mean={s_mean:.1f}>{params['s_mean_max']}")
+            if aspect < params["aspect_min"]:
+                reasons.append(f"aspect={aspect:.2f}<{params['aspect_min']}")
+            gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
+            edge_density = int(np.count_nonzero(edges[mask > 0])) / roi_pixels
+            if edge_density < params["edge_density_min"]:
+                reasons.append(f"edge_density={edge_density:.3f}<{params['edge_density_min']}")
+
+        elif label == "can":
+            spec = self._get_specular_mask(frame)
+            spec_ratio = (int(np.count_nonzero(spec[mask > 0])) / roi_pixels
+                          if spec is not None else 0.0)
+            if spec_ratio < params["specular_ratio_min"]:
+                reasons.append(f"specular={spec_ratio:.4f}<{params['specular_ratio_min']}")
+            if s_std < params["s_std_min"]:
+                reasons.append(f"S_std={s_std:.1f}<{params['s_std_min']}")
+            if aspect < params["aspect_min"]:
+                reasons.append(f"aspect={aspect:.2f}<{params['aspect_min']}")
+
+        elif label == "cup":
+            if v_mean < params["v_mean_min"]:
+                reasons.append(f"V_mean={v_mean:.1f}<{params['v_mean_min']}")
+            if s_mean > params["s_mean_max"]:
+                reasons.append(f"S_mean={s_mean:.1f}>{params['s_mean_max']}")
+            if not (params["aspect_min"] <= aspect <= params["aspect_max"]):
+                reasons.append(
+                    f"aspect={aspect:.2f} out [{params['aspect_min']},{params['aspect_max']}]")
+
+        if reasons:
+            self.get_logger().debug(
+                f"[VALIDATE] DROP '{label}' conf={raw['confidence']:.2f} "
+                f"| {', '.join(reasons)}"
+            )
+            return False
+
+        self.get_logger().debug(
+            f"[VALIDATE] PASS '{label}' conf={raw['confidence']:.2f} "
+            f"aspect={aspect:.2f} S={s_mean:.1f} V={v_mean:.1f}"
+        )
+        return True
+
+    def _filter_raws(self, raws: list) -> list:
+        """1차 화이트리스트 → 2차 OpenCV ROI 검증 통과한 것만 반환."""
+        filtered = []
+        for raw in raws:
+            if raw["label"] not in self._ALLOWED_LABELS:
+                self.get_logger().debug(
+                    f"[FILTER] DROP unlisted label='{raw['label']}'"
+                )
+                continue
+            if not self._validate_detection_roi(raw):
+                continue
+            filtered.append(raw)
+        return filtered
 
     # ═══════════════════════════════════════════════════════
     #  YOLO 추론
@@ -281,7 +477,8 @@ class VisionNode(Node):
             det.cx, det.cy = raw["cx"], raw["cy"]
 
             if raw.get("points") is not None:
-                x_m, y_m, z_m = self._obb_to_3d(raw["points"])
+                x_m, y_m, z_m, gx, gy = self._obb_to_3d(raw["points"])
+                raw["grasp_px"] = (int(gx), int(gy))
             else:
                 x_m, y_m, z_m = self._pixel_to_3d(raw["cx"], raw["cy"])
 
@@ -298,18 +495,22 @@ class VisionNode(Node):
     # ═══════════════════════════════════════════════════════
 
     def _obb_to_3d(self, points_px):
-        """OBB 내 depth 포인트 전체 → 물체 두께 정중앙으로 그립 포인트 계산.
+        """OBB 장축 슬라이싱 → 각 슬라이스 최고점의 중간점으로 그립 포인트 계산.
 
-        - top_z   : OBB 내 포인트 상위 15%(카메라에 가장 가까운) 중앙값
-        - bottom_z: OBB 내 포인트 하위 15%(카메라에서 가장 먼) 중앙값
-        - grasp_z = (top_z + bottom_z) / 2
-        - grasp_xy: top 포인트들의 XY 중앙값
+        1. OBB 장축 방향으로 N_SLICES 등분
+        2. 각 슬라이스에서 depth 최솟값(카메라에 가장 가까운 = 물체 최상단) 픽셀 추출
+        3. 그 픽셀들의 픽셀 XY 중앙값 → grasp_xy  (물체 장축 중심)
+        4. grasp_z = (top_z + bottom_z) / 2  (물체 높이 중간)
+
+        Returns: (x_m, y_m, grasp_z, cx_px, cy_px)
         """
         if self._depth_frame is None or self._intrinsics is None:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
         try:
             import numpy as np
             import cv2
+
+            N_SLICES = 12
 
             h, w     = self._depth_frame.shape[:2]
             fx, fy   = self._intrinsics["fx"],  self._intrinsics["fy"]
@@ -321,40 +522,75 @@ class VisionNode(Node):
 
             # 마스크 내 유효 depth 픽셀 추출
             ys, xs = np.where((mask > 0) & (self._depth_frame > 0))
-            if len(xs) < 10:
-                return 0.0, 0.0, 0.0
+            if len(xs) < N_SLICES:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
 
             depths = self._depth_frame[ys, xs].astype(float) * self._depth_scl
             valid  = depths > 0.01
             xs, ys, depths = xs[valid], ys[valid], depths[valid]
-            if len(xs) < 10:
-                return 0.0, 0.0, 0.0
+            if len(xs) < N_SLICES:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
 
-            # 오름차순 정렬 (작을수록 카메라에 가까움)
-            sort_idx = np.argsort(depths)
-            n15      = max(1, int(len(sort_idx) * 0.15))
+            # ── OBB 장축 방향 계산 ──────────────────────────────
+            # points_px: OBB 4꼭짓점 (4,2) int32
+            pts = points_px.astype(float)
+            # 장축: 가장 긴 변의 방향벡터
+            d0 = pts[1] - pts[0]
+            d1 = pts[2] - pts[1]
+            long_axis = d0 if np.linalg.norm(d0) >= np.linalg.norm(d1) else d1
+            long_axis = long_axis / np.linalg.norm(long_axis)   # 단위벡터
 
-            top_idx    = sort_idx[:n15]   # 카메라에 가장 가까운 15%
-            bottom_idx = sort_idx[-n15:]  # 카메라에서 가장 먼 15%
+            # OBB 중심
+            cx_obb = float(np.mean(pts[:, 0]))
+            cy_obb = float(np.mean(pts[:, 1]))
 
-            top_z    = float(np.median(depths[top_idx]))
-            bottom_z = float(np.median(depths[bottom_idx]))
+            # 각 픽셀을 장축에 투영
+            pts_arr   = np.stack([xs, ys], axis=1).astype(float)
+            centered  = pts_arr - np.array([cx_obb, cy_obb])
+            proj      = centered @ long_axis          # 장축 방향 스칼라
+
+            # N_SLICES 등분 → 각 슬라이스에서 depth 최솟값 픽셀
+            proj_min, proj_max = proj.min(), proj.max()
+            edges = np.linspace(proj_min, proj_max, N_SLICES + 1)
+
+            top_xs, top_ys, top_depths = [], [], []
+            slice_all_xs, slice_all_ys = [], []
+            for k in range(N_SLICES):
+                in_slice = (proj >= edges[k]) & (proj < edges[k + 1])
+                if not np.any(in_slice):
+                    continue
+                slice_depths = depths[in_slice]
+                best         = np.argmin(slice_depths)           # 최소 depth = 최고점
+                top_xs.append(xs[in_slice][best])
+                top_ys.append(ys[in_slice][best])
+                top_depths.append(slice_depths[best])
+                slice_all_xs.append(xs[in_slice])
+                slice_all_ys.append(ys[in_slice])
+
+            if len(top_depths) < 2:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
+
+            top_depths = np.array(top_depths)
+            best_slice = int(np.argmin(top_depths))              # 가장 높은 슬라이스 인덱스
+            top_z    = float(top_depths[best_slice])
+            bottom_z = float(np.median(depths[np.argsort(depths)[-max(1, int(len(depths) * 0.15)):]]))
             grasp_z  = (top_z + bottom_z) / 2.0
 
-            # grasp_xy: top 포인트들의 픽셀 XY 중앙값 → 3D 변환
-            cx_px = float(np.median(xs[top_idx]))
-            cy_px = float(np.median(ys[top_idx]))
+            # grasp_xy: 가장 높은 슬라이스 내 픽셀들의 중앙값
+            cx_px = float(np.median(slice_all_xs[best_slice]))
+            cy_px = float(np.median(slice_all_ys[best_slice]))
             x_m   = (cx_px - ppx) * grasp_z / fx
             y_m   = (cy_px - ppy) * grasp_z / fy
 
             self.get_logger().debug(
-                f"[OBB3D] top_z={top_z:.3f} bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
+                f"[OBB3D] slices={len(top_depths)} top_z={top_z:.3f} "
+                f"bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
             )
-            return x_m, y_m, grasp_z
+            return x_m, y_m, grasp_z, cx_px, cy_px
 
         except Exception as e:
             self.get_logger().warn(f"OBB 3D error: {e}")
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
 
     # ═══════════════════════════════════════════════════════
     #  2D → 3D 변환 (ROI 평균 depth, OBB 없을 때 fallback)
