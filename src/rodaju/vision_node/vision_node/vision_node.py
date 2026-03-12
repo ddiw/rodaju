@@ -31,6 +31,8 @@ from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from std_msgs.msg import Empty
 from cv_bridge import CvBridge
 
+from vision_node.depth_utils import pixel_to_3d, obb_to_3d
+
 try:
     from recycle_interfaces.msg import Detection2D, Detections2D
     INTERFACES_AVAILABLE = True
@@ -42,7 +44,7 @@ try:
     from vision_node.yolo import YoloModel
     YOLO_AVAILABLE = True
 except Exception as _yolo_err:
-    print(f"[WARN] YoloModel import failed: {_yolo_err}")  # 디버깅
+    print(f"[WARN] YoloModel import failed: {_yolo_err}")
     YOLO_AVAILABLE = False
 
 
@@ -58,8 +60,8 @@ class VisionNode(Node):
         # ── 파라미터 ────────────────────────────────────────
         self.declare_parameter("publish_rate",    10.0)
         self.declare_parameter("conf_threshold",   0.70)
-        self.declare_parameter("depth_scale",      0.001)  # mm → m
-        self.declare_parameter("depth_roi_radius",    3)   # 중심 주변 평균 반경
+        self.declare_parameter("depth_scale",      0.001)
+        self.declare_parameter("depth_roi_radius",    3)
 
         self._rate       = self.get_parameter("publish_rate").value
         self._conf       = self.get_parameter("conf_threshold").value
@@ -73,12 +75,8 @@ class VisionNode(Node):
         self._intrinsics  = None
         self._det_id_cnt  = 0
 
-        # 중복 발행 방지: 이미 발행한 물체 위치 추적
-        # key = (label, cx // _BUCKET, cy // _BUCKET)
-        self._BUCKET     = 50          # 픽셀 버킷 크기 (같은 물체 중복 방지)
+        self._BUCKET     = 50
         self._published: set[tuple] = set()
-
-        # one-shot 스캔 모드: reset 신호를 받으면 N프레임만 스캔 후 정지
         self._scan_frames_remaining = 0
 
         # ── YOLO ────────────────────────────────────────────
@@ -106,7 +104,6 @@ class VisionNode(Node):
         else:
             self._pub = self.create_publisher(String, "/recycle/vision/detections", 10)
 
-        # ── 시각화 프리뷰 발행 (dashboard MJPEG 용) ─────────
         self._preview_pub = self.create_publisher(
             CompressedImage, "/recycle/vision/preview", 1)
 
@@ -128,7 +125,7 @@ class VisionNode(Node):
     def _reset_cb(self, _msg):
         """sweep 완료 후 manager_node가 발행하는 리셋 신호: one-shot 스캔 활성화."""
         self._published.clear()
-        self._scan_frames_remaining = 10  # 10Hz 기준 1초간 스캔
+        self._scan_frames_remaining = 10
         self.get_logger().info("[VISION] One-shot scan activated (10 frames / 1s).")
 
     def _info_cb(self, msg: CameraInfo):
@@ -148,7 +145,6 @@ class VisionNode(Node):
         if self._color_frame is None:
             return
 
-        # one-shot 모드: reset 신호 없이는 스캔 안 함
         if self._scan_frames_remaining <= 0:
             return
         self._scan_frames_remaining -= 1
@@ -159,20 +155,17 @@ class VisionNode(Node):
         raws = self._run_yolo(self._color_frame)
         dets = []
 
-        # 현재 프레임의 버킷 키 집합 (사라진 물체 제거용)
         current_keys: set[tuple] = set()
-
         for raw in raws:
             key = (raw["label"], raw["cx"] // self._BUCKET, raw["cy"] // self._BUCKET)
             current_keys.add(key)
             if key in self._published:
-                continue          # 이미 발행한 물체 → 스킵
+                continue
             det = self._build_detection(raw)
             if det:
                 dets.append(det)
                 self._published.add(key)
 
-        # 이번 프레임에서 사라진 물체는 추적 목록에서 제거
         self._published &= current_keys
 
         # 바운딩박스 시각화
@@ -180,25 +173,22 @@ class VisionNode(Node):
         for raw in raws:
             label_text = f"{raw['label']} {raw['confidence']:.2f}"
             if raw.get("points") is not None:
-                # OBB: 회전된 다각형
                 cv2.polylines(vis, [raw["points"]], isClosed=True, color=(0, 255, 0), thickness=2)
                 x, y = int(raw["points"][0][0]), int(raw["points"][0][1])
             else:
-                # 일반 bbox
                 x1, y1 = raw["x"], raw["y"]
                 x2, y2 = x1 + raw["w"], y1 + raw["h"]
                 cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 x, y = x1, y1
             cv2.putText(vis, label_text, (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            # 그립 포인트 표시 (빨간 점)
             if raw.get("grasp_px"):
                 cv2.circle(vis, raw["grasp_px"], 8, (0, 0, 255), -1)
                 cv2.circle(vis, raw["grasp_px"], 10, (255, 255, 255), 2)
         cv2.imshow("vision_node", vis)
         cv2.waitKey(1)
 
-        # ── 시각화 프레임 → ROS CompressedImage 발행 ────────
+        # 시각화 프레임 → ROS CompressedImage 발행
         try:
             import cv2 as _cv2
             ok, buf = _cv2.imencode(".jpg", vis, [_cv2.IMWRITE_JPEG_QUALITY, 75])
@@ -211,8 +201,6 @@ class VisionNode(Node):
         except Exception as _e:
             self.get_logger().debug(f"Preview publish error: {_e}")
 
-        # 감지 결과가 없으면 발행하지 않음
-        # (빈 메시지가 manager_node 큐에 노이즈로 쌓이는 것 방지)
         if not dets:
             if raws:
                 self.get_logger().debug(
@@ -226,9 +214,7 @@ class VisionNode(Node):
             msg.frame_id   = "camera_color_optical_frame"
             msg.detections = dets
             self._pub.publish(msg)
-            self.get_logger().debug(
-                f"[VISION] Published {len(dets)} detections"
-            )
+            self.get_logger().debug(f"[VISION] Published {len(dets)} detections")
         except Exception:
             from std_msgs.msg import String as Str
             s      = Str()
@@ -246,7 +232,6 @@ class VisionNode(Node):
             results = self._yolo.model([frame], verbose=False)
             dets = []
             for res in results:
-                # OBB 모델 우선, 없으면 일반 boxes
                 boxes_src = res.obb if (res.obb is not None and len(res.obb)) else res.boxes
                 if boxes_src is None or len(boxes_src) == 0:
                     continue
@@ -260,9 +245,7 @@ class VisionNode(Node):
                     if score < self._conf:
                         continue
                     x1, y1, x2, y2 = [int(v) for v in box]
-                    raw_label = res.names[int(cls)]
-                    label     = raw_label
-                    # OBB: 4개 꼭짓점 + 회전 각도(rad→deg) 저장
+                    label     = res.names[int(cls)]
                     points    = None
                     angle_deg = 0.0
                     if is_obb:
@@ -302,10 +285,17 @@ class VisionNode(Node):
             det.cx, det.cy = raw["cx"], raw["cy"]
 
             if raw.get("points") is not None:
-                x_m, y_m, z_m, gx, gy = self._obb_to_3d(raw["points"])
+                x_m, y_m, z_m, gx, gy = obb_to_3d(
+                    raw["points"], self._depth_frame, self._intrinsics,
+                    depth_scale=self._depth_scl, logger=self.get_logger(),
+                )
                 raw["grasp_px"] = (int(gx), int(gy))
             else:
-                x_m, y_m, z_m = self._pixel_to_3d(raw["cx"], raw["cy"])
+                x_m, y_m, z_m = pixel_to_3d(
+                    raw["cx"], raw["cy"], self._depth_frame, self._intrinsics,
+                    depth_scale=self._depth_scl, roi_radius=self._depth_roi,
+                    logger=self.get_logger(),
+                )
 
             det.has_3d = z_m > 0.01
             det.x_m, det.y_m, det.z_m = float(x_m), float(y_m), float(z_m)
@@ -314,140 +304,6 @@ class VisionNode(Node):
         except Exception as e:
             self.get_logger().warn(f"Build detection error: {e}")
             return None
-
-    # ═══════════════════════════════════════════════════════
-    #  2D → 3D 변환 (OBB 내 포인트 기반 그립 포인트 계산)
-    # ═══════════════════════════════════════════════════════
-
-    def _obb_to_3d(self, points_px):
-        """OBB 장축 슬라이싱 → 각 슬라이스 최고점의 중간점으로 그립 포인트 계산.
-
-        1. OBB 장축 방향으로 N_SLICES 등분
-        2. 각 슬라이스에서 depth 최솟값(카메라에 가장 가까운 = 물체 최상단) 픽셀 추출
-        3. 그 픽셀들의 픽셀 XY 중앙값 → grasp_xy  (물체 장축 중심)
-        4. grasp_z = (top_z + bottom_z) / 2  (물체 높이 중간)
-
-        Returns: (x_m, y_m, grasp_z, cx_px, cy_px)
-        """
-        if self._depth_frame is None or self._intrinsics is None:
-            return 0.0, 0.0, 0.0, 0.0, 0.0
-        try:
-            import numpy as np
-            import cv2
-
-            N_SLICES = 12
-
-            h, w     = self._depth_frame.shape[:2]
-            fx, fy   = self._intrinsics["fx"],  self._intrinsics["fy"]
-            ppx, ppy = self._intrinsics["ppx"], self._intrinsics["ppy"]
-
-            # OBB 폴리곤 마스크 생성
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.fillPoly(mask, [points_px], 255)
-
-            # 마스크 내 유효 depth 픽셀 추출
-            ys, xs = np.where((mask > 0) & (self._depth_frame > 0))
-            if len(xs) < N_SLICES:
-                return 0.0, 0.0, 0.0, 0.0, 0.0
-
-            depths = self._depth_frame[ys, xs].astype(float) * self._depth_scl
-            valid  = depths > 0.01
-            xs, ys, depths = xs[valid], ys[valid], depths[valid]
-            if len(xs) < N_SLICES:
-                return 0.0, 0.0, 0.0, 0.0, 0.0
-
-            # ── OBB 장축 방향 계산 ──────────────────────────────
-            # points_px: OBB 4꼭짓점 (4,2) int32
-            pts = points_px.astype(float)
-            # 장축: 가장 긴 변의 방향벡터
-            d0 = pts[1] - pts[0]
-            d1 = pts[2] - pts[1]
-            long_axis = d0 if np.linalg.norm(d0) >= np.linalg.norm(d1) else d1
-            long_axis = long_axis / np.linalg.norm(long_axis)   # 단위벡터
-
-            # OBB 중심
-            cx_obb = float(np.mean(pts[:, 0]))
-            cy_obb = float(np.mean(pts[:, 1]))
-
-            # 각 픽셀을 장축에 투영
-            pts_arr   = np.stack([xs, ys], axis=1).astype(float)
-            centered  = pts_arr - np.array([cx_obb, cy_obb])
-            proj      = centered @ long_axis          # 장축 방향 스칼라
-
-            # N_SLICES 등분 → 각 슬라이스에서 depth 최솟값 픽셀
-            proj_min, proj_max = proj.min(), proj.max()
-            edges = np.linspace(proj_min, proj_max, N_SLICES + 1)
-
-            top_xs, top_ys, top_depths = [], [], []
-            slice_all_xs, slice_all_ys = [], []
-            for k in range(N_SLICES):
-                in_slice = (proj >= edges[k]) & (proj < edges[k + 1])
-                if not np.any(in_slice):
-                    continue
-                slice_depths = depths[in_slice]
-                best         = np.argmin(slice_depths)           # 최소 depth = 최고점
-                top_xs.append(xs[in_slice][best])
-                top_ys.append(ys[in_slice][best])
-                top_depths.append(slice_depths[best])
-                slice_all_xs.append(xs[in_slice])
-                slice_all_ys.append(ys[in_slice])
-
-            if len(top_depths) < 2:
-                return 0.0, 0.0, 0.0, 0.0, 0.0
-
-            top_depths = np.array(top_depths)
-            RANK = min(2, len(top_depths) - 1)                   # 3번째(인덱스 2), 슬라이스 수 부족 시 최대
-            best_slice = int(np.argsort(top_depths)[RANK])       # depth 오름차순 RANK번째 슬라이스
-            top_z    = float(top_depths[best_slice])
-            bottom_z = float(np.median(depths[np.argsort(depths)[-max(1, int(len(depths) * 0.15)):]]))
-            grasp_z  = (top_z + bottom_z) / 2.0
-
-            # grasp_xy: 가장 높은 슬라이스 내 픽셀들의 중앙값
-            cx_px = float(np.median(slice_all_xs[best_slice]))
-            cy_px = float(np.median(slice_all_ys[best_slice]))
-            x_m   = (cx_px - ppx) * grasp_z / fx
-            y_m   = (cy_px - ppy) * grasp_z / fy
-
-            self.get_logger().debug(
-                f"[OBB3D] slices={len(top_depths)} top_z={top_z:.3f} "
-                f"bottom_z={bottom_z:.3f} grasp_z={grasp_z:.3f}"
-            )
-            return x_m, y_m, grasp_z, cx_px, cy_px
-
-        except Exception as e:
-            self.get_logger().warn(f"OBB 3D error: {e}")
-            return 0.0, 0.0, 0.0, 0.0, 0.0
-
-    # ═══════════════════════════════════════════════════════
-    #  2D → 3D 변환 (ROI 평균 depth, OBB 없을 때 fallback)
-    # ═══════════════════════════════════════════════════════
-
-    def _pixel_to_3d(self, cx: int, cy: int):
-        if self._depth_frame is None or self._intrinsics is None:
-            return 0.0, 0.0, 0.0
-        try:
-            import numpy as np
-            h, w = self._depth_frame.shape[:2]
-            r    = self._depth_roi
-            x1   = max(0, cx - r); x2 = min(w, cx + r + 1)
-            y1   = max(0, cy - r); y2 = min(h, cy + r + 1)
-            roi  = self._depth_frame[y1:y2, x1:x2].astype(float)
-            valid = roi[roi > 0]
-            if valid.size == 0:
-                return 0.0, 0.0, 0.0
-
-            z_m = float(np.median(valid)) * self._depth_scl
-            if z_m < 0.01:
-                return 0.0, 0.0, 0.0
-
-            fx, fy   = self._intrinsics["fx"],  self._intrinsics["fy"]
-            ppx, ppy = self._intrinsics["ppx"], self._intrinsics["ppy"]
-            x_m = (cx - ppx) * z_m / fx
-            y_m = (cy - ppy) * z_m / fy
-            return x_m, y_m, z_m
-        except Exception as e:
-            self.get_logger().warn(f"3D transform error: {e}")
-            return 0.0, 0.0, 0.0
 
 
 def main(args=None):
