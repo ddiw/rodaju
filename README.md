@@ -181,17 +181,37 @@ rodaju/
 
 ---
 
-## ⚙️ 설치 및 환경 설정
+## ⚙️ 설치 및 실행
 
-### 요구 사항
+### 사전 요구 사항
 
-- ROS 2 Humble (또는 Iron)
-- Python 3.10+
-- DSR m0609 로봇 SDK (`DSR_ROBOT2`, `DR_init`)
-- Intel RealSense SDK 2.0 + `realsense2_camera` ROS 패키지
-- OnRobot RG2 그리퍼 (`pymodbus`)
+아래 항목이 미리 설치·설정되어 있어야 합니다.
 
-### Python 의존성 설치
+| 항목 | 버전 / 비고 |
+|------|-------------|
+| ROS 2 | Humble 또는 Iron |
+| Python | 3.10 이상 |
+| DSR 로봇 SDK | `DSR_ROBOT2`, `DR_init` (도슨트 로봇 공식 SDK) |
+| Intel RealSense SDK | 2.0 이상 + `realsense2_camera` ROS 패키지 |
+| OnRobot RG2 그리퍼 | Modbus TCP 연결 (`192.168.1.1:502`) |
+| Git | 2.x 이상 |
+
+---
+
+### 1단계 — 저장소 클론
+
+```bash
+# ROS 2 워크스페이스로 이동 (없으면 생성)
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws/src
+
+# main 브랜치 클론
+git clone https://github.com/ddiw/rodaju.git
+```
+
+---
+
+### 2단계 — Python 의존성 설치
 
 ```bash
 pip install \
@@ -200,55 +220,114 @@ pip install \
   ultralytics \
   openai langchain langchain-openai \
   openwakeword \
-  sounddevice scipy \
+  sounddevice \
   pyaudio \
-  flask \
-  cv_bridge
+  flask
 ```
 
-### Hand-Eye 캘리브레이션 행렬 배치
+> `cv_bridge`는 ROS 2 패키지로 설치합니다.
+> ```bash
+> sudo apt install ros-humble-cv-bridge   # Iron이면 humble → iron
+> ```
+
+---
+
+### 3단계 — ROS 2 패키지 빌드
 
 ```bash
-# execute_node 패키지 share 디렉터리에 배치
-cp T_gripper2camera.npy \
+cd ~/ros2_ws
+
+# 의존 패키지 자동 설치
+rosdep install --from-paths src --ignore-src -r -y
+
+# 빌드 (recycle_interfaces 먼저 빌드하여 메시지 생성)
+colcon build --symlink-install --packages-select recycle_interfaces
+colcon build --symlink-install
+
+# 환경 소싱
+source install/setup.bash
+```
+
+> 이후 새 터미널을 열 때마다 아래 명령을 실행하거나 `~/.bashrc`에 추가하세요.
+> ```bash
+> source ~/ros2_ws/install/setup.bash
+> ```
+
+---
+
+### 4단계 — Hand-Eye 캘리브레이션 파일 배치
+
+카메라-로봇 간 좌표 변환에 필요한 행렬 파일을 지정 경로에 복사합니다.
+
+```bash
+cp /path/to/T_gripper2camera.npy \
   $(ros2 pkg prefix execute_node)/share/execute_node/resource/
 ```
 
-### OpenAI API 키 설정
+> 파일이 없으면 픽셀 좌표 기반 fallback으로 동작하지만 정밀도가 낮아집니다.
+
+---
+
+### 5단계 — 환경 변수 설정
 
 ```bash
+# OpenAI API 키 (STT · LLM 파서에 필요)
 export OPENAI_API_KEY="sk-..."
+```
+
+영구 적용하려면 `~/.bashrc`에 추가합니다.
+
+```bash
+echo 'export OPENAI_API_KEY="sk-..."' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 ---
 
-## 🚀 실행
+### 6단계 — 시스템 실행
 
-### 전체 시스템 실행
+#### 전체 실행 (권장)
 
 ```bash
 ros2 launch rodaju rodaju_launch.py
 ```
 
-### 옵션 인자
+#### 옵션 인자
 
 ```bash
-# 음성 명령 노드 비활성화
+# 음성 명령 노드 없이 실행
 ros2 launch rodaju rodaju_launch.py use_voice:=false
 
-# 웹 UI 비활성화
+# 웹 UI 없이 실행
 ros2 launch rodaju rodaju_launch.py use_ui:=false
+
+# 음성·UI 모두 비활성화
+ros2 launch rodaju rodaju_launch.py use_voice:=false use_ui:=false
 ```
 
-### 개별 노드 실행
+#### 개별 노드 실행 (디버깅용)
+
+각 노드를 별도 터미널에서 실행합니다.
 
 ```bash
+# 터미널 1 — 비전 노드
 ros2 run vision_node vision
+
+# 터미널 2 — 매니저 노드
 ros2 run manager_node manager
+
+# 터미널 3 — 실행 노드 (로봇 제어)
 ros2 run execute_node execute
+
+# 터미널 4 — UI 노드 (선택)
+ros2 run UI_node ui_node
 ```
 
+---
+
 ### 웹 대시보드 접속
+
+시스템 실행 후 브라우저에서 접속합니다.
 
 ```
 http://localhost:5000
