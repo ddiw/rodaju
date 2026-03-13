@@ -15,7 +15,7 @@ from execute_node.constants import (
     BIN_POSITIONS, GRIPPER_PARAMS,
 )
 from execute_node.coord_transform import cam_to_robot, pixel_estimate
-
+from execute_node.shake_classifier import do_shake_classify
 
 # ═══════════════════════════════════════════════════════════════
 #  빗자루 공통 헬퍼
@@ -115,7 +115,7 @@ def do_pick_place(robot, gripper, goal, T_gripper2cam, angle_offset: float,
 
     bin_id  = goal.bin_id
     gp      = GRIPPER_PARAMS.get(bin_id, GRIPPER_PARAMS["DEFAULT"])
-    bin_pos = BIN_POSITIONS.get(bin_id, BIN_POSITIONS["BIN_PLASTIC"])
+    bin_pos = BIN_POSITIONS.get(bin_id, BIN_POSITIONS["BIN_PLASTIC_EMPTY"])
 
     # ── 목표 좌표 계산 ────────────────────────────────────
     robot_posx = robot.get_posx()
@@ -168,6 +168,13 @@ def do_pick_place(robot, gripper, goal, T_gripper2cam, angle_offset: float,
     # ── 3. LIFT & 4. MOVE_BIN ─────────────────────────────
     _fb("LIFT", 50.0)
     robot.movel(approach);  robot.mwait()
+
+    if bin_id == "BIN_PLASTIC":
+        robot.movej(J_HOME, vel=VELOCITY, acc=ACC); robot.mwait()
+        bin_id    = do_shake_classify(robot, fb=_fb, logger=logger)
+        bin_pos   = BIN_POSITIONS[bin_id]
+        bin_above = list(bin_pos); bin_above[2] += APPROACH_Z_OFFSET
+
     _fb("MOVE_HOME", 60.0)
     robot.movej(J_HOME);    robot.mwait()
     _fb("MOVE_BIN", 65.0)

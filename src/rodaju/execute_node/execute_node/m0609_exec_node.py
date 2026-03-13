@@ -106,14 +106,19 @@ class M0609ExecNode(Node):
 
             result.success = success
             result.message = "OK" if success else "FAILED"
-            goal_handle.succeed() if success else goal_handle.abort()
 
         except Exception as e:
             log.error(f"Execute error: {e}")
             result.success = False; result.message = str(e)
-            fb("ERROR", 0.0); self._go_home(); goal_handle.abort()
+            fb("ERROR", 0.0); self._go_home()
+
         finally:
-            self._busy = False
+            self._busy = False  # 새 goal 수신 가능 상태로 전환 (succeed 전에 해제)
+
+        if result.success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
 
         return result
 

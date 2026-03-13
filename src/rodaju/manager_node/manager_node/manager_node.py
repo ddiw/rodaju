@@ -44,7 +44,7 @@ class ManagerNode(Node):
         super().__init__("manager_node")
 
         self.declare_parameter("status_rate",    2.0)
-        self.declare_parameter("action_timeout", 40.0)
+        self.declare_parameter("action_timeout", 120.0)
         self._status_rate    = self.get_parameter("status_rate").value
         self._action_timeout = self.get_parameter("action_timeout").value
 
@@ -232,7 +232,12 @@ class ManagerNode(Node):
             return
 
         self.get_logger().info("[SORT] Moving to J_WORK for vision scan...")
-        self._exec.send_exec_command("GOTO_WORK")
+        if not self._exec.send_exec_command("GOTO_WORK"):
+            self.get_logger().warn("[SORT] GOTO_WORK failed – skipping scan cycle.")
+            return
+
+        # 로봇이 J_WORK에 완전히 정착할 때까지 대기
+        time.sleep(1.0)
 
         # 이전 스캔 결과 버리기 → 리셋 신호 발행
         while not self._det_queue.empty():

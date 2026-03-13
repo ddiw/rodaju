@@ -15,15 +15,16 @@ class RobotAPI:
     """DSR 로봇 API 래퍼."""
 
     def __init__(self):
-        from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, trans
+        from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, trans, get_external_torque
+        self._get_ext_torque = get_external_torque
         self._movej           = movej
         self._movel           = movel
         self._get_current_posx = get_current_posx
         self._mwait           = mwait
         self._trans           = trans
 
-    def movej(self, joints, vel=VELOCITY, acc=ACC):
-        self._movej(joints, vel=vel, acc=acc)
+    def movej(self, joints, vel=VELOCITY, acc=ACC, radius=0.0):
+        self._movej(joints, vel=vel, acc=acc, radius=radius)
 
     def movel(self, pos, vel=VELOCITY, acc=ACC):
         self._movel(pos, vel=vel, acc=acc)
@@ -36,7 +37,9 @@ class RobotAPI:
 
     def trans_offset(self, pos: list, delta: list) -> list:
         return list(self._trans(pos, delta))
-
+    
+    def get_external_torque(self) -> list:
+        return list(self._get_ext_torque())
 
 class GripperAPI:
     """OnRobot RG2 그리퍼 API 래퍼."""

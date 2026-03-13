@@ -185,9 +185,6 @@ class VisionNode(Node):
             if raw.get("grasp_px"):
                 cv2.circle(vis, raw["grasp_px"], 8, (0, 0, 255), -1)
                 cv2.circle(vis, raw["grasp_px"], 10, (255, 255, 255), 2)
-        cv2.imshow("vision_node", vis)
-        cv2.waitKey(1)
-
         # 시각화 프레임 → ROS CompressedImage 발행
         try:
             import cv2 as _cv2
