@@ -1,0 +1,14 @@
+# Goal
+string move_mode     # "movej", "movel", "movec" 등 두산 로봇 제어 명령어 명시
+float32[] goal_pos   # [J1~J6] (movej의 경우) 또는 [X, Y, Z, Rx, Ry, Rz] (movel의 경우)
+float32[] goal_pos_c
+int32 vel          # 이동 속도 (선택적 제어를 위해 추가)
+int32 acc          # 이동 가속도 (선택적 제어를 위해 추가)
+---
+# Result
+bool success         # 목표 도달 및 물리적 제동 완료 여부
+string message       # 실패 시 원인, 성공 시 "Reached" 등의 메시지
+---
+# Feedback
+string status        # "Moving", "Planning", "Stopping" 등 현재 로봇의 상태
+float32 progress     # 이동 진행률 (0.0 ~ 100.0)

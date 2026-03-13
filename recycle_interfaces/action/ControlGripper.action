@@ -1,0 +1,11 @@
+# Goal
+string command       # "open" 또는 "close"
+int32 force          # 파지력 (0 ~ 100). open일 경우 무시됨.
+---
+# Result
+bool success         # 그리퍼 작동 완료 여부
+string message       # "Grasped", "Dropped", "Opened" 등 결과
+---
+# Feedback
+string status        # "Opening", "Closing" 등 상태
+float32 progress     # 작동 진행률 (0.0 ~ 100.0)

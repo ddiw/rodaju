@@ -1,0 +1,9 @@
+# Goal
+float64[] goal_pos
+---
+#Result
+bool succes
+---
+# Feedback
+string status
+float32 progress
