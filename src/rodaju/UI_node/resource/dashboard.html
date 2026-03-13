@@ -6,7 +6,7 @@
 <title>Recycling Robot Dashboard</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #e8eaf0; color: #2c2f3a; font-family: 'Segoe UI', sans-serif; font-size: 14px; }
+  body { background: #e8eaf0; color: #2c2f3a; font-family: 'Segoe UI', sans-serif; font-size: 28px; }
 
   header {
     background: #ffffff;
@@ -17,9 +17,9 @@
     border-bottom: 1px solid #d0d3de;
     box-shadow: 0 1px 4px rgba(0,0,0,0.08);
   }
-  header h1 { font-size: 18px; color: #3a7bd5; letter-spacing: 1px; }
+  header h1 { font-size: 36px; color: #3a7bd5; letter-spacing: 1px; }
   #conn-dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; display: inline-block; margin-right: 6px; }
-  #conn-label { font-size: 12px; color: #888; }
+  #conn-label { font-size: 24px; color: #888; }
 
   .grid {
     display: grid;
@@ -34,13 +34,13 @@
     padding: 16px;
     box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   }
-  .card h2 { font-size: 12px; color: #3a7bd5; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  .card h2 { font-size: 24px; color: #3a7bd5; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
 
   /* 상태 */
   .status-row { display: flex; gap: 24px; flex-wrap: wrap; }
   .stat-box { flex: 1; min-width: 100px; }
-  .stat-box .label { font-size: 11px; color: #888; margin-bottom: 4px; }
-  .stat-box .value { font-size: 20px; font-weight: bold; }
+  .stat-box .label { font-size: 22px; color: #888; margin-bottom: 4px; }
+  .stat-box .value { font-size: 40px; font-weight: bold; }
   .RUNNING  { color: #2e7d32; }
   .PAUSED   { color: #e65100; }
   .STOPPED  { color: #c62828; }
@@ -49,7 +49,7 @@
 
   /* 분류함 */
   .bin-row { margin-bottom: 10px; }
-  .bin-row .bin-label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px; color: #444; }
+  .bin-row .bin-label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 24px; color: #444; }
   .bar-bg { background: #dde0ea; border-radius: 4px; height: 10px; }
   .bar-fill { height: 10px; border-radius: 4px; transition: width 0.4s; }
   .bar-plastic { background: #1976d2; }
@@ -60,14 +60,14 @@
   /* 통계 */
   .counters { display: flex; gap: 12px; flex-wrap: wrap; }
   .counter-box { flex: 1; min-width: 60px; background: #f0f2f8; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid #d0d3de; }
-  .counter-box .c-label { font-size: 11px; color: #888; }
-  .counter-box .c-val   { font-size: 24px; font-weight: bold; color: #1976d2; }
+  .counter-box .c-label { font-size: 22px; color: #888; }
+  .counter-box .c-val   { font-size: 48px; font-weight: bold; color: #1976d2; }
 
   /* 현재 작업 */
   .progress-wrap { margin-top: 8px; }
   .progress-bar-bg { background: #dde0ea; border-radius: 4px; height: 12px; }
   .progress-bar-fill { height: 12px; border-radius: 4px; background: #1976d2; transition: width 0.4s; }
-  #last-msg { font-size: 12px; color: #666; margin-top: 8px; min-height: 18px; }
+  #last-msg { font-size: 24px; color: #666; margin-top: 8px; min-height: 18px; }
 
   /* 컨트롤 */
   .btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -76,7 +76,7 @@
     border: none;
     border-radius: 7px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 26px;
     font-weight: bold;
     transition: opacity 0.15s;
   }
@@ -98,13 +98,13 @@
     height: 180px;
     overflow-y: auto;
     font-family: monospace;
-    font-size: 11px;
+    font-size: 22px;
     color: #555;
     grid-column: 1 / -1;
   }
   #log-box p { margin-bottom: 2px; border-bottom: 1px solid #e4e6ef; padding-bottom: 2px; }
 
-  .priority-display { font-size: 12px; color: #e65100; margin-top: 4px; min-height: 16px; }
+  .priority-display { font-size: 24px; color: #e65100; margin-top: 4px; min-height: 16px; }
 
   /* ── 웨이크업 모달 ─────────────────────────────────────── */
   #wakeup-overlay {
@@ -144,7 +144,7 @@
     border-radius: 50%;
     background: linear-gradient(135deg, #3a7bd5, #1a4a9a);
     display: flex; align-items: center; justify-content: center;
-    font-size: 22px;
+    font-size: 44px;
     flex-shrink: 0;
     position: relative;
     box-shadow: 0 4px 16px rgba(58,123,213,0.4);
@@ -170,11 +170,11 @@
     100% { transform: scale(1.5); opacity: 0; }
   }
 
-  .popup-title    { font-size: 16px; font-weight: 700; color: #7ecfff; letter-spacing: 0.5px; }
-  .popup-subtitle { font-size: 12px; color: #6a7a99; margin-top: 3px; }
+  .popup-title    { font-size: 32px; font-weight: 700; color: #7ecfff; letter-spacing: 0.5px; }
+  .popup-subtitle { font-size: 24px; color: #6a7a99; margin-top: 3px; }
 
   .popup-stage {
-    font-size: 10px;
+    font-size: 20px;
     color: #8899bb;
     text-transform: uppercase;
     letter-spacing: 1.5px;
@@ -192,7 +192,7 @@
     border: 1px solid rgba(58,123,213,0.2);
   }
   .popup-body-text {
-    font-size: 14px;
+    font-size: 28px;
     color: #e0e8ff;
     word-break: break-all;
     flex: 1;
@@ -226,8 +226,8 @@
   }
   .popup-cmd-badge { display: none; }
   .popup-cmd-badge.show { display: block; }
-  .popup-cmd-badge .badge-label { font-size: 10px; color: #4cdb8a; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .popup-cmd-badge .badge-val   { font-size: 14px; color: #a0ffcc; font-weight: bold; }
+  .popup-cmd-badge .badge-label { font-size: 20px; color: #4cdb8a; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .popup-cmd-badge .badge-val   { font-size: 28px; color: #a0ffcc; font-weight: bold; }
 
   /* 모달 하단 닫기 버튼 */
   .modal-footer {
@@ -238,7 +238,7 @@
     background: transparent;
     border: 1px solid #3a4a66;
     color: #6a7a99;
-    font-size: 12px;
+    font-size: 24px;
     padding: 6px 16px;
     border-radius: 6px;
     cursor: pointer;
@@ -273,7 +273,7 @@
       </div>
       <div class="stat-box">
         <div class="label">Phase</div>
-        <div class="value" id="phase" style="font-size:16px;color:#7ecfff">-</div>
+        <div class="value" id="phase" style="font-size: 32px;color:#7ecfff">-</div>
       </div>
     </div>
     <div class="priority-display" id="priority-display"></div>
@@ -302,7 +302,7 @@
       <button class="btn-policy" id="p-CAN"     onclick="togglePriority('CAN')">🔴 Can</button>
       <button class="btn-policy" id="p-PAPER"   onclick="togglePriority('PAPER')">🟢 Paper</button>
     </div>
-    <div id="priority-order-display" style="font-size:11px;color:#888;margin-top:6px;min-height:16px;"></div>
+    <div id="priority-order-display" style="font-size: 22px;color:#888;margin-top:6px;min-height:16px;"></div>
   </div>
 
   <!-- 분류함 용량 -->
@@ -348,7 +348,7 @@
         <h2 style="display:flex; align-items:center; gap:8px;">
           YOLO Detection
           <span id="vision-status" style="
-            font-size:10px; font-weight:normal; color:#888;
+            font-size: 20px; font-weight:normal; color:#888;
             background:#f0f2f8; border:1px solid #d0d3de;
             border-radius:4px; padding:2px 7px; letter-spacing:0.5px;">
             대기중
@@ -364,17 +364,17 @@
             onerror="visionError()"
             onload="visionLoaded()">
           <div id="vision-placeholder" style="
-            text-align:center; color:#3a4a66; font-size:12px; line-height:1.8;">
-            <div style="font-size:28px; margin-bottom:6px;">📷</div>
+            text-align:center; color:#3a4a66; font-size: 24px; line-height:1.8;">
+            <div style="font-size: 56px; margin-bottom:6px;">📷</div>
             카메라 연결 대기중...<br>
-            <span style="font-size:10px; color:#2a3555;">vision_node 실행 확인</span>
+            <span style="font-size: 20px; color:#2a3555;">vision_node 실행 확인</span>
           </div>
           <!-- 감지 오버레이 배지 -->
           <div id="vision-badge" style="
             display:none; position:absolute; top:8px; right:8px;
             background:rgba(0,0,0,0.6); border:1px solid #1976d2;
             border-radius:6px; padding:4px 8px;
-            font-size:11px; color:#7ecfff; backdrop-filter:blur(4px);">
+            font-size: 22px; color:#7ecfff; backdrop-filter:blur(4px);">
             🟢 LIVE
           </div>
         </div>
@@ -565,7 +565,7 @@ function updateVisionBadges(logs) {
     const c = DET_COLORS[label];
     return `<span style="
       background:${c.bg}; border:1px solid ${c.border};
-      border-radius:5px; padding:3px 9px; font-size:11px; color:#333;">
+      border-radius:5px; padding:3px 9px; font-size: 22px; color:#333;">
       ${c.emoji} ${label}
     </span>`;
   }).join('');

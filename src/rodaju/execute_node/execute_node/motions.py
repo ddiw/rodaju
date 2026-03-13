@@ -146,28 +146,38 @@ def do_pick_place(robot, gripper, goal, T_gripper2cam, angle_offset: float,
     gripper.move(width=gp["width"], force=gp["force"])
     robot.movel(approach); robot.mwait()
 
-    # ── 2. GRASP (재시도) ──────────────────────────────────
+    # ── 2. GRASP + LIFT (재시도) ───────────────────────────
     gripped = False
     for attempt in range(1, MAX_GRASP_RETRIES + 1):
         _fb("GRASP", 30.0)
         robot.movel(pick_pos, vel=VELOCITY_SLOW); robot.mwait()
         gripper.close(force=gp["force"])
+        if not gripper.is_gripping():
+            if logger:
+                logger.warn(f"[GRASP] attempt {attempt}/{MAX_GRASP_RETRIES} – close failed, retry.")
+            robot.movel(approach, vel=VELOCITY_SLOW); robot.mwait()
+            gripper.move(width=gp["width"], force=gp["force"])
+            continue
+
+        # 잡은 채로 들어올린 뒤 다시 확인 (이동 중 낙하 검출)
+        _fb("LIFT", 50.0)
+        robot.movel(approach, vel=VELOCITY_SLOW); robot.mwait()
         if gripper.is_gripping():
             gripped = True
             break
+
+        # 낙하 시 위치가 바뀌었으므로 재시도 불가 → 즉시 실패 반환
         if logger:
-            logger.warn(f"[GRASP] attempt {attempt}/{MAX_GRASP_RETRIES} – retry.")
-        robot.movel(approach, vel=VELOCITY_SLOW); robot.mwait()
-        gripper.move(width=gp["width"], force=gp["force"])
+            logger.warn(f"[GRASP] attempt {attempt}/{MAX_GRASP_RETRIES} – dropped after lift, aborting for redetection.")
+        gripper.open()
+        return False
 
     if not gripped:
         if logger: logger.error("[GRASP] Failed after all retries.")
         robot.movel(approach); robot.mwait()
         return False
 
-    # ── 3. LIFT & 4. MOVE_BIN ─────────────────────────────
-    _fb("LIFT", 50.0)
-    robot.movel(approach);  robot.mwait()
+    # ── 3. MOVE_BIN ───────────────────────────────────────
 
     if bin_id == "BIN_PLASTIC":
         robot.movej(J_HOME, vel=VELOCITY, acc=ACC); robot.mwait()
@@ -183,6 +193,15 @@ def do_pick_place(robot, gripper, goal, T_gripper2cam, angle_offset: float,
     # ── 5. PLACE & 6. RETURN ──────────────────────────────
     _fb("PLACE", 85.0)
     robot.movel(bin_pos, vel=VELOCITY_SLOW); robot.mwait()
+
+    # 이동 중 낙하 여부 최종 확인
+    if not gripper.is_gripping():
+        if logger:
+            logger.warn("[PLACE] Object dropped during transit – aborting for redetection.")
+        robot.movel(bin_above); robot.mwait()
+        robot.movej(J_HOME, vel=VELOCITY, acc=ACC); robot.mwait()
+        return False
+
     gripper.open()
     time.sleep(0.3)
 

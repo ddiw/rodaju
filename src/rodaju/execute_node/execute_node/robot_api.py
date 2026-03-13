@@ -59,8 +59,15 @@ class GripperAPI:
         self._g.move_gripper(width_val=width, force_val=force)
         self._wait()
 
-    def is_gripping(self) -> bool:
-        return bool(self._g.get_status()[1])
+    def is_gripping(self, min_width_mm: float = 10.0) -> bool:
+        """grip detected 비트 + 실제 width 검사.
+
+        RG2는 손가락끼리 맞닿아도 internal grip(bit1=1)을 올리므로
+        width가 min_width_mm 이상일 때만 실제로 물체를 잡은 것으로 판정.
+        """
+        grip_detected = bool(self._g.get_status()[1])
+        width_mm = self._g.get_width()
+        return grip_detected and width_mm > min_width_mm
 
     def _wait(self, timeout=5.0):
         # 1단계: busy=1 (동작 시작) 대기 (최대 0.5초)

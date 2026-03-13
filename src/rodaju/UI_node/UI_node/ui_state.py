@@ -69,6 +69,8 @@ class UIState:
 
     def add_log(self, text: str):
         with self.lock:
+            if self.log_lines and self.log_lines[-1].split("] ", 1)[-1] == text:
+                return
             ts = time.strftime("%H:%M:%S")
             self.log_lines.append(f"[{ts}] {text}")
             if len(self.log_lines) > 300:
