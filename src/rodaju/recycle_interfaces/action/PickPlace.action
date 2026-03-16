@@ -1,0 +1,25 @@
+# Goal
+int32 detection_id
+string label
+
+int32 pick_cx
+int32 pick_cy
+
+bool has_3d
+float32 pick_x_m
+float32 pick_y_m
+float32 pick_z_m
+
+float32 pick_angle_deg   # OBB 회전 각도 (deg). 0이면 고정 자세 사용
+
+string bin_id
+
+---
+# Result
+bool success
+string message
+
+---
+# Feedback
+string phase
+float32 progress

@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recycling Robot Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #e8eaf0; color: #2c2f3a; font-family: 'Segoe UI', sans-serif; font-size: 28px; }
+
+  header {
+    background: #ffffff;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #d0d3de;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  header h1 { font-size: 36px; color: #3a7bd5; letter-spacing: 1px; }
+  #conn-dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; display: inline-block; margin-right: 6px; }
+  #conn-label { font-size: 24px; color: #888; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px;
+  }
+  .card {
+    background: #ffffff;
+    border: 1px solid #d0d3de;
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .card h2 { font-size: 24px; color: #3a7bd5; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+
+  /* 상태 */
+  .status-row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .stat-box { flex: 1; min-width: 100px; }
+  .stat-box .label { font-size: 22px; color: #888; margin-bottom: 4px; }
+  .stat-box .value { font-size: 40px; font-weight: bold; }
+  .RUNNING  { color: #2e7d32; }
+  .PAUSED   { color: #e65100; }
+  .STOPPED  { color: #c62828; }
+  .IDLE     { color: #546e7a; }
+  .ERROR    { color: #c62828; }
+
+  /* 분류함 */
+  .bin-row { margin-bottom: 10px; }
+  .bin-row .bin-label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 24px; color: #444; }
+  .bar-bg { background: #dde0ea; border-radius: 4px; height: 10px; }
+  .bar-fill { height: 10px; border-radius: 4px; transition: width 0.4s; }
+  .bar-plastic { background: #1976d2; }
+  .bar-can     { background: #c62828; }
+  .bar-paper   { background: #2e7d32; }
+  .bar-trash   { background: #546e7a; }
+
+  /* 통계 */
+  .counters { display: flex; gap: 12px; flex-wrap: wrap; }
+  .counter-box { flex: 1; min-width: 60px; background: #f0f2f8; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid #d0d3de; }
+  .counter-box .c-label { font-size: 22px; color: #888; }
+  .counter-box .c-val   { font-size: 48px; font-weight: bold; color: #1976d2; }
+
+  /* 현재 작업 */
+  .progress-wrap { margin-top: 8px; }
+  .progress-bar-bg { background: #dde0ea; border-radius: 4px; height: 12px; }
+  .progress-bar-fill { height: 12px; border-radius: 4px; background: #1976d2; transition: width 0.4s; }
+  #last-msg { font-size: 24px; color: #666; margin-top: 8px; min-height: 18px; }
+
+  /* 컨트롤 */
+  .btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  button {
+    padding: 10px 6px;
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 26px;
+    font-weight: bold;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.82; }
+  .btn-start   { background: #2e7d32; color: #fff; }
+  .btn-stop    { background: #c62828; color: #fff; }
+  .btn-pause   { background: #ef6c00; color: #fff; }
+  .btn-resume  { background: #1565c0; color: #fff; }
+  .btn-home    { background: #6a1b9a; color: #fff; }
+  .btn-policy  { background: #f0f2f8; color: #444; border: 1px solid #c0c4d0; }
+  .btn-policy.active { background: #e3f0ff; border-color: #1976d2; color: #1565c0; }
+
+  /* 로그 */
+  #log-box {
+    background: #f5f6fa;
+    border: 1px solid #d0d3de;
+    border-radius: 6px;
+    padding: 10px;
+    height: 180px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 22px;
+    color: #555;
+    grid-column: 1 / -1;
+  }
+  #log-box p { margin-bottom: 2px; border-bottom: 1px solid #e4e6ef; padding-bottom: 2px; }
+
+  .priority-display { font-size: 24px; color: #e65100; margin-top: 4px; min-height: 16px; }
+
+  /* ── 웨이크업 모달 ─────────────────────────────────────── */
+  #wakeup-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(3px);
+    z-index: 9998;
+    align-items: center;
+    justify-content: center;
+  }
+  #wakeup-overlay.show { display: flex; }
+
+  #wakeup-modal {
+    width: 400px;
+    background: #1a1d2e;
+    border: 1px solid #3a7bd5;
+    border-radius: 18px;
+    padding: 28px 28px 24px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(58,123,213,0.3);
+    animation: wakeup-modal-in 0.25s ease;
+  }
+  @keyframes wakeup-modal-in {
+    from { transform: scale(0.85); opacity: 0; }
+    to   { transform: scale(1);    opacity: 1; }
+  }
+
+  .popup-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .popup-mic-icon {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #3a7bd5, #1a4a9a);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 44px;
+    flex-shrink: 0;
+    position: relative;
+    box-shadow: 0 4px 16px rgba(58,123,213,0.4);
+  }
+  .popup-mic-icon.listening::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+    border-radius: 50%;
+    border: 2px solid #3a7bd5;
+    animation: pulse-ring 1s ease-out infinite;
+  }
+  .popup-mic-icon.listening::before {
+    content: '';
+    position: absolute;
+    inset: -12px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(58,123,213,0.35);
+    animation: pulse-ring 1s ease-out 0.3s infinite;
+  }
+  @keyframes pulse-ring {
+    0%   { transform: scale(1);   opacity: 0.8; }
+    100% { transform: scale(1.5); opacity: 0; }
+  }
+
+  .popup-title    { font-size: 32px; font-weight: 700; color: #7ecfff; letter-spacing: 0.5px; }
+  .popup-subtitle { font-size: 24px; color: #6a7a99; margin-top: 3px; }
+
+  .popup-stage {
+    font-size: 20px;
+    color: #8899bb;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 8px;
+  }
+
+  .popup-body {
+    background: #12152a;
+    border-radius: 10px;
+    padding: 14px 16px;
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid rgba(58,123,213,0.2);
+  }
+  .popup-body-text {
+    font-size: 28px;
+    color: #e0e8ff;
+    word-break: break-all;
+    flex: 1;
+    line-height: 1.5;
+  }
+  .popup-body-text.muted { color: #566280; font-style: italic; }
+  .popup-body-text.cmd   { color: #4cdb8a; font-weight: bold; }
+
+  .popup-dots {
+    display: inline-flex; gap: 5px; align-items: center;
+  }
+  .popup-dots span {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #3a7bd5;
+    animation: dot-bounce 1.2s ease-in-out infinite;
+  }
+  .popup-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .popup-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dot-bounce {
+    0%, 80%, 100% { transform: scale(0.7); opacity: 0.4; }
+    40%           { transform: scale(1);   opacity: 1; }
+  }
+
+  .popup-cmd-badge {
+    margin-top: 12px;
+    background: #0d2a1a;
+    border: 1px solid #2e7d32;
+    border-radius: 8px;
+    padding: 10px 14px;
+    display: none;
+  }
+  .popup-cmd-badge { display: none; }
+  .popup-cmd-badge.show { display: block; }
+  .popup-cmd-badge .badge-label { font-size: 20px; color: #4cdb8a; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .popup-cmd-badge .badge-val   { font-size: 28px; color: #a0ffcc; font-weight: bold; }
+
+  /* 모달 하단 닫기 버튼 */
+  .modal-footer {
+    margin-top: 18px;
+    text-align: right;
+  }
+  #modal-close-btn {
+    background: transparent;
+    border: 1px solid #3a4a66;
+    color: #6a7a99;
+    font-size: 24px;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  #modal-close-btn:hover {
+    border-color: #3a7bd5;
+    color: #7ecfff;
+    background: rgba(58,123,213,0.1);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>♻ Recycling Robot Dashboard</h1>
+  <div>
+    <span id="conn-dot"></span>
+    <span id="conn-label">연결 중...</span>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- 시스템 상태 -->
+  <div class="card">
+    <h2>System Status</h2>
+    <div class="status-row">
+      <div class="stat-box">
+        <div class="label">State</div>
+        <div class="value" id="state">-</div>
+      </div>
+      <div class="stat-box">
+        <div class="label">Phase</div>
+        <div class="value" id="phase" style="font-size: 32px;color:#7ecfff">-</div>
+      </div>
+    </div>
+    <div class="priority-display" id="priority-display"></div>
+    <div id="last-msg">-</div>
+    <div class="progress-wrap">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="prog-bar" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 컨트롤 -->
+  <div class="card">
+    <h2>Control</h2>
+    <div class="btn-grid">
+      <button class="btn-start"  onclick="sendCmd('START','sorting')">▶ Start</button>
+      <button class="btn-pause"  onclick="sendCmd('PAUSE')">⏸ Pause</button>
+      <button class="btn-resume" onclick="sendCmd('RESUME','sorting')">▷ Resume</button>
+      <button class="btn-stop"   onclick="sendCmd('STOP')">⏹ Stop</button>
+      <button class="btn-home"   onclick="sendCmd('START','standby')">⌂ Home</button>
+      <button class="btn-policy" id="btn-reset" onclick="setPolicy([])">↺ Reset</button>
+    </div>
+    <h2 style="margin-top:14px;">Priority</h2>
+    <div class="btn-grid" style="grid-template-columns: repeat(3,1fr); margin-top:6px;">
+      <button class="btn-policy" id="p-PLASTIC" onclick="togglePriority('PLASTIC')">🔵 Plastic</button>
+      <button class="btn-policy" id="p-CAN"     onclick="togglePriority('CAN')">🔴 Can</button>
+      <button class="btn-policy" id="p-PAPER"   onclick="togglePriority('PAPER')">🟢 Paper</button>
+    </div>
+    <div id="priority-order-display" style="font-size: 22px;color:#888;margin-top:6px;min-height:16px;"></div>
+  </div>
+
+  <!-- 분류함 용량 -->
+  <div class="card">
+    <h2>Bin Capacity</h2>
+    <div class="bin-row">
+      <div class="bin-label"><span>Plastic</span><span id="cnt-plastic">0/20</span></div>
+      <div class="bar-bg"><div class="bar-fill bar-plastic" id="bar-plastic" style="width:0%"></div></div>
+    </div>
+    <div class="bin-row">
+      <div class="bin-label"><span>Can</span><span id="cnt-can">0/15</span></div>
+      <div class="bar-bg"><div class="bar-fill bar-can" id="bar-can" style="width:0%"></div></div>
+    </div>
+    <div class="bin-row">
+      <div class="bin-label"><span>Paper</span><span id="cnt-paper">0/25</span></div>
+      <div class="bar-bg"><div class="bar-fill bar-paper" id="bar-paper" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- 처리 통계 -->
+  <div class="card">
+    <h2>Statistics</h2>
+    <div class="counters">
+      <div class="counter-box"><div class="c-label">Total</div><div class="c-val" id="s-total">0</div></div>
+      <div class="counter-box"><div class="c-label">Plastic</div><div class="c-val" id="s-plastic">0</div></div>
+      <div class="counter-box"><div class="c-label">Can</div><div class="c-val" id="s-can">0</div></div>
+      <div class="counter-box"><div class="c-label">Paper</div><div class="c-val" id="s-paper">0</div></div>
+    </div>
+  </div>
+
+  <!-- 로그 -->
+  <div class="card" style="grid-column: 1 / -1; padding-bottom:10px;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; align-items:start;">
+
+      <!-- 로그 -->
+      <div>
+    <h2>Log</h2>
+    <div id="log-box"></div>
+  </div>
+
+      <!-- YOLO 프리뷰 -->
+      <div>
+        <h2 style="display:flex; align-items:center; gap:8px;">
+          YOLO Detection
+          <span id="vision-status" style="
+            font-size: 20px; font-weight:normal; color:#888;
+            background:#f0f2f8; border:1px solid #d0d3de;
+            border-radius:4px; padding:2px 7px; letter-spacing:0.5px;">
+            대기중
+          </span>
+        </h2>
+        <div style="
+          position:relative; background:#0d1117; border-radius:8px;
+          overflow:hidden; border:1px solid #d0d3de;
+          aspect-ratio: 4/3; display:flex; align-items:center; justify-content:center;">
+          <img id="vision-feed"
+            src="/video_feed"
+            style="width:100%; height:100%; object-fit:contain; display:none;"
+            onerror="visionError()"
+            onload="visionLoaded()">
+          <div id="vision-placeholder" style="
+            text-align:center; color:#3a4a66; font-size: 24px; line-height:1.8;">
+            <div style="font-size: 56px; margin-bottom:6px;">📷</div>
+            카메라 연결 대기중...<br>
+            <span style="font-size: 20px; color:#2a3555;">vision_node 실행 확인</span>
+          </div>
+          <!-- 감지 오버레이 배지 -->
+          <div id="vision-badge" style="
+            display:none; position:absolute; top:8px; right:8px;
+            background:rgba(0,0,0,0.6); border:1px solid #1976d2;
+            border-radius:6px; padding:4px 8px;
+            font-size: 22px; color:#7ecfff; backdrop-filter:blur(4px);">
+            🟢 LIVE
+          </div>
+        </div>
+        <!-- 최근 감지 결과 요약 -->
+        <div id="vision-det-row" style="
+          display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; min-height:26px;">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- ── 웨이크업 모달 ─────────────────────────────── -->
+<div id="wakeup-overlay">
+  <div id="wakeup-modal">
+    <div class="popup-header">
+      <div class="popup-mic-icon" id="popup-mic">🎤</div>
+      <div>
+        <div class="popup-title" id="popup-title">웨이크업 감지!</div>
+        <div class="popup-subtitle" id="popup-subtitle">음성 명령 처리 중...</div>
+      </div>
+    </div>
+    <div class="popup-stage" id="popup-stage">대기</div>
+    <div class="popup-body">
+      <div class="popup-body-text muted" id="popup-text">
+        <span class="popup-dots"><span></span><span></span><span></span></span>
+      </div>
+    </div>
+    <div class="popup-cmd-badge" id="popup-cmd-badge">
+      <div class="badge-label">명령 전송</div>
+      <div class="badge-val" id="popup-cmd-val">-</div>
+    </div>
+    <div class="modal-footer">
+      <button id="modal-close-btn" onclick="hidePopup()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const BIN_CAP = { BIN_PLASTIC: 20, BIN_CAN: 15, BIN_PAPER: 25 };
+let pendingOrder = [];
+
+// ── 웨이크업 팝업 상태 ────────────────────────────────────────
+const popup       = document.getElementById('wakeup-overlay');
+const popupModal  = document.getElementById('wakeup-modal');
+const popupMic    = document.getElementById('popup-mic');
+const popupTitle  = document.getElementById('popup-title');
+const popupSub    = document.getElementById('popup-subtitle');
+const popupStage  = document.getElementById('popup-stage');
+const popupText   = document.getElementById('popup-text');
+const popupBadge  = document.getElementById('popup-cmd-badge');
+const popupCmdVal = document.getElementById('popup-cmd-val');
+
+let popupHideTimer = null;
+let lastLogSnapshot = [];
+
+const DOTS_HTML = '<span class="popup-dots"><span></span><span></span><span></span></span>';
+
+function showPopup() {
+  clearTimeout(popupHideTimer);
+  popup.classList.add('show');
+  popupMic.classList.add('listening');
+  popupTitle.textContent   = '웨이크업 감지!';
+  popupSub.textContent     = '음성 명령 처리 중...';
+  popupStage.textContent   = 'STT 녹음 준비';
+  popupText.className      = 'popup-body-text muted';
+  popupText.innerHTML      = DOTS_HTML;
+  popupBadge.classList.remove('show');
+}
+
+function hidePopup() {
+  popupMic.classList.remove('listening');
+  popupHideTimer = setTimeout(() => {
+    popup.classList.remove('show');
+  }, 250);
+}
+
+// 오버레이 클릭 시 닫기
+document.getElementById('wakeup-overlay').addEventListener('click', function(e) {
+  if (e.target === this) hidePopup();
+});
+
+function setPopupStage(stage, text, cls = '') {
+  popupStage.textContent = stage;
+  popupText.className    = 'popup-body-text ' + cls;
+  popupText.innerHTML    = text || DOTS_HTML;
+}
+
+// 로그 줄에서 웨이크업 이벤트 감지
+function checkLogs(logs) {
+  const newLogs = logs.filter(l => !lastLogSnapshot.includes(l));
+  lastLogSnapshot = logs.slice();
+
+  for (const line of newLogs) {
+    // 웨이크업 감지
+    if (line.includes('웨이크업 감지')) {
+      showPopup();
+    }
+    // STT 녹음 시작
+    else if (line.includes('STT 시작') || line.includes('녹음 시작')) {
+      setPopupStage('🎙 STT 녹음 중', DOTS_HTML, 'muted');
+      popupSub.textContent = '말씀해 주세요...';
+    }
+    // STT 결과
+    else if (line.includes('[STT]') && !line.includes('녹음') && !line.includes('전송')) {
+      const m = line.match(/\[STT\]\s*['"']?(.+?)['"']?\s*$/);
+      const txt = m ? m[1].replace(/^'|'$/g, '') : line.split('[STT]')[1]?.trim() || '';
+      if (txt) {
+        setPopupStage('✅ 음성 인식 완료', escHtml(txt), '');
+        popupSub.textContent = '명령 해석 중...';
+      }
+    }
+    // CMD 발행
+    else if (line.includes('[CMD 발행]') || line.includes('[CMD]')) {
+      const mCmd  = line.match(/cmd=(\w+)/);
+      const mMode = line.match(/mode=(\w+)/);
+      const cmdStr = [mCmd?.[1], mMode?.[1]].filter(Boolean).join(' / ');
+      if (cmdStr) {
+        popupCmdVal.textContent = cmdStr;
+        popupBadge.classList.add('show');
+        setPopupStage('📡 명령 전송 완료', escHtml(cmdStr), 'cmd');
+        popupSub.textContent = '로봇에 명령 전달됨';
+        popupMic.classList.remove('listening');
+        popupMic.textContent = '✅';
+      }
+    }
+    // 웨이크업 대기 중 → 팝업 닫기
+    else if (line.includes('웨이크업 단어 대기')) {
+      clearTimeout(popupHideTimer);
+      popupHideTimer = setTimeout(hidePopup, 1200);
+    }
+  }
+}
+
+// ── YOLO 프리뷰 상태 ─────────────────────────────────────────
+let visionOk = false;
+
+function visionLoaded() {
+  if (!visionOk) {
+    visionOk = true;
+    document.getElementById('vision-feed').style.display = 'block';
+    document.getElementById('vision-placeholder').style.display = 'none';
+    document.getElementById('vision-badge').style.display = 'block';
+    document.getElementById('vision-status').textContent = 'LIVE';
+    document.getElementById('vision-status').style.color = '#2e7d32';
+    document.getElementById('vision-status').style.borderColor = '#4caf50';
+  }
+}
+
+function visionError() {
+  visionOk = false;
+  document.getElementById('vision-feed').style.display = 'none';
+  document.getElementById('vision-placeholder').style.display = 'flex';
+  document.getElementById('vision-placeholder').style.flexDirection = 'column';
+  document.getElementById('vision-placeholder').style.alignItems = 'center';
+  document.getElementById('vision-badge').style.display = 'none';
+  document.getElementById('vision-status').textContent = '오프라인';
+  document.getElementById('vision-status').style.color = '#c62828';
+  document.getElementById('vision-status').style.borderColor = '#e57373';
+  // 3초 후 재연결 시도
+  setTimeout(() => {
+    const img = document.getElementById('vision-feed');
+    img.src = '/video_feed?' + Date.now();
+  }, 3000);
+}
+
+// 로그에서 감지 결과 파싱해 배지 표시
+const DET_COLORS = {
+  bottle: { bg:'#e3f0ff', border:'#1976d2', emoji:'🍼' },
+  can:    { bg:'#ffeaea', border:'#c62828', emoji:'🥫' },
+  cup:    { bg:'#e8f5e9', border:'#2e7d32', emoji:'☕' },
+};
+
+function updateVisionBadges(logs) {
+  const row = document.getElementById('vision-det-row');
+  // 최근 10줄에서 VALIDATE PASS 파싱
+  const recent = logs.slice(-15).join(' ');
+  const found = new Set();
+  Object.keys(DET_COLORS).forEach(label => {
+    if (new RegExp(`PASS.*'${label}'|label.*${label}`, 'i').test(recent)) {
+      found.add(label);
+    }
+  });
+  if (found.size === 0) return;
+  row.innerHTML = [...found].map(label => {
+    const c = DET_COLORS[label];
+    return `<span style="
+      background:${c.bg}; border:1px solid ${c.border};
+      border-radius:5px; padding:3px 9px; font-size: 22px; color:#333;">
+      ${c.emoji} ${label}
+    </span>`;
+  }).join('');
+  setTimeout(() => { row.innerHTML = ''; }, 4000);
+}
+
+
+const dot   = document.getElementById('conn-dot');
+const label = document.getElementById('conn-label');
+
+function connect() {
+  const es = new EventSource('/stream');
+  es.onopen = () => {
+    dot.style.background = '#4caf50';
+    label.textContent = '연결됨';
+  };
+  es.onerror = () => {
+    dot.style.background = '#ef5350';
+    label.textContent = '연결 끊김 – 재연결 중...';
+    es.close();
+    setTimeout(connect, 2000);
+  };
+  es.onmessage = e => update(JSON.parse(e.data));
+}
+connect();
+
+// ── 상태 업데이트 ─────────────────────────────────────────────
+function update(d) {
+  // State
+  const stateEl = document.getElementById('state');
+  stateEl.textContent = d.state;
+  stateEl.className = 'value ' + d.state;
+
+  document.getElementById('phase').textContent = d.phase;
+  document.getElementById('last-msg').textContent = d.last_message;
+  document.getElementById('prog-bar').style.width = (d.progress || 0) + '%';
+
+  // priority
+  const po = d.priority_order || [];
+  document.getElementById('priority-display').textContent =
+    po.length ? 'Priority: ' + po.join(' > ') : '';
+
+  // bins
+  const bc = d.bin_counts || {};
+  setBin('plastic', bc.BIN_PLASTIC || d.plastic || 0, BIN_CAP.BIN_PLASTIC);
+  setBin('can',     bc.BIN_CAN     || d.can     || 0, BIN_CAP.BIN_CAN);
+  setBin('paper',   bc.BIN_PAPER   || d.paper   || 0, BIN_CAP.BIN_PAPER);
+
+  // stats
+  document.getElementById('s-total').textContent   = d.total;
+  document.getElementById('s-plastic').textContent = d.plastic;
+  document.getElementById('s-can').textContent     = d.can;
+  document.getElementById('s-paper').textContent   = d.paper;
+
+  // log
+  const box = document.getElementById('log-box');
+  box.innerHTML = (d.logs || []).slice().reverse()
+    .map(l => `<p>${escHtml(l)}</p>`).join('');
+
+  // 웨이크업 팝업 감지
+  checkLogs(d.logs || []);
+
+  // YOLO 감지 배지 업데이트
+  updateVisionBadges(d.logs || []);
+}
+
+function setBin(name, cnt, cap) {
+  document.getElementById('cnt-' + name).textContent = cnt + '/' + cap;
+  document.getElementById('bar-' + name).style.width = Math.min(100, cnt / cap * 100) + '%';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── 명령 전송 ─────────────────────────────────────────────────
+function sendCmd(cmd, mode='', priority_order=[], exclude_mask=0) {
+  fetch('/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ cmd, mode, priority_order, exclude_mask, raw: `WEB:${cmd}` })
+  });
+}
+
+// ── 우선순위 토글 ─────────────────────────────────────────────
+const CATS = ['PLASTIC', 'CAN', 'PAPER'];
+
+function togglePriority(cat) {
+  const idx = pendingOrder.indexOf(cat);
+  if (idx === -1) {
+    pendingOrder.push(cat);
+  } else {
+    pendingOrder.splice(idx, 1);
+  }
+  CATS.forEach(c => {
+    const btn = document.getElementById('p-' + c);
+    const i   = pendingOrder.indexOf(c);
+    if (i !== -1) {
+      btn.classList.add('active');
+      btn.textContent = (i + 1) + ' ' + c.charAt(0) + c.slice(1).toLowerCase();
+    } else {
+      btn.classList.remove('active');
+      btn.textContent = { PLASTIC:'🔵 Plastic', CAN:'🔴 Can', PAPER:'🟢 Paper' }[c];
+    }
+  });
+  const disp = document.getElementById('priority-order-display');
+  if (pendingOrder.length) {
+    disp.textContent = '적용 순서: ' + pendingOrder.join(' > ') + ' → SET_POLICY 전송됨';
+    sendCmd('SET_POLICY', '', pendingOrder.slice());
+  } else {
+    disp.textContent = '';
+  }
+}
+
+function setPolicy(order) {
+  pendingOrder = [];
+  CATS.forEach(c => {
+    const btn = document.getElementById('p-' + c);
+    btn.classList.remove('active');
+    btn.textContent = { PLASTIC:'🔵 Plastic', CAN:'🔴 Can', PAPER:'🟢 Paper' }[c];
+  });
+  document.getElementById('priority-order-display').textContent = '';
+  sendCmd('SET_POLICY', '', []);
+}
+</script>
+</body>
+</html>
